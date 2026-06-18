@@ -7,6 +7,7 @@ from models import VendorInput, VendorRiskReport, Base
 from data_aggregator import aggregate_vendor_data
 from llm_service import extract_findings_from_data
 from risk_scorer import score_findings
+from token_manager import token_manager
 import json
 import pandas as pd
 from typing import Optional
@@ -49,6 +50,8 @@ class RiskReportResponse(BaseModel):
     summary: str
     findings: list[FindingResponse]
     recommendations: str
+    tokens_used: int
+    tokens_remaining: int
 
 # ============ ENDPOINTS ============
 
@@ -128,6 +131,10 @@ async def scan_vendor(input_id: str, db: Session = Depends(get_db)):
     """
     Scan a vendor: aggregate data + LLM analysis + scoring.
     """
+    # Check token balance first
+    if token_manager.get_balance() <= 0:
+        raise HTTPException(status_code=402, detail="Insufficient tokens to perform scan.")
+        
     try:
         # 1. Get vendor input
         vendor = db.query(VendorInput).filter(VendorInput.input_id == input_id).first()
@@ -149,8 +156,16 @@ async def scan_vendor(input_id: str, db: Session = Depends(get_db)):
         )
         
         # 3. Extract findings via LLM
-        findings = await extract_findings_from_data(aggregated_data)
+        findings, tokens_used = await extract_findings_from_data(aggregated_data)
         
+        # Deduct tokens (if not enough, fallback but we checked earlier)
+        # We assume 1 token = 1 unit for now, or just subtract tokens_used
+        # If tokens_used is higher than balance, they just go to 0 or negative.
+        if token_manager.get_balance() >= tokens_used:
+             token_manager.deduct(tokens_used)
+        else:
+             token_manager.deduct(token_manager.get_balance()) # drain it
+             
         # 4. Score findings
         risk_result = score_findings(findings)
         
@@ -179,7 +194,9 @@ async def scan_vendor(input_id: str, db: Session = Depends(get_db)):
             risk_score=float(report.risk_score),
             summary=report.summary,
             findings=[FindingResponse(**f) for f in report.findings_json],
-            recommendations=report.recommendations
+            recommendations=report.recommendations,
+            tokens_used=tokens_used,
+            tokens_remaining=token_manager.get_balance()
         )
         
     except Exception as e:

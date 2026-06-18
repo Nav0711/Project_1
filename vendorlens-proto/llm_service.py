@@ -9,10 +9,10 @@ MOCK_MODE = os.getenv("MOCK_API_CALLS", "false").lower() == "true"
 api_key = os.getenv("ANTHROPIC_API_KEY")
 client = AsyncAnthropic(api_key=api_key) if api_key else None
 
-async def extract_findings_from_data(aggregated_data: dict) -> list:
+async def extract_findings_from_data(aggregated_data: dict) -> tuple[list, int]:
     """
     Send aggregated API data to Claude and extract adverse findings.
-    Returns list of Finding dictionaries.
+    Returns tuple: (list of Finding dictionaries, total_tokens_used)
     """
     
     if MOCK_MODE or not client:
@@ -34,7 +34,7 @@ async def extract_findings_from_data(aggregated_data: dict) -> list:
                 "source_api": "gdelt",
                 "confidence_score": 0.60
             }
-        ]
+        ], 1500  # Return mock findings and 1500 mock tokens
     
     # Build the prompt
     prompt = f"""You are a KYB (Know Your Business) due diligence analyst.
@@ -106,12 +106,16 @@ If NO adverse findings, return: []"""
                 "confidence_score": float(f.get("confidence_score", 0.0))
             })
         
-        logger.info(f"Extracted {len(findings)} findings")
-        return findings
+        
+        # Calculate tokens used
+        tokens_used = message.usage.input_tokens + message.usage.output_tokens
+        
+        logger.info(f"Extracted {len(findings)} findings using {tokens_used} tokens")
+        return findings, tokens_used
         
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse Claude response as JSON: {e}")
-        return []
+        return [], 0
     except Exception as e:
         logger.error(f"Claude API error: {e}")
-        return []
+        return [], 0
