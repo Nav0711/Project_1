@@ -1,0 +1,24 @@
+# Local environment variables
+.env
+.env.*
+!.env.example
+
+# Local SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+vendorlens.db
+vendorlens.db-journal
+
+# Python files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+venv/
+.venv/
+env/
+
+# OS/System files
+.DS_Store

@@ -11,11 +11,20 @@ class VendorInput(Base):
     
     input_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     legal_name = Column(String(255), nullable=False, index=True)
-    jurisdiction = Column(String(100))
+    website_domain = Column(String(255), nullable=False)
     registration_number = Column(String(100))
-    directors = Column(JSON)  # [{"name": "John Doe", "position": "CEO"}]
-    ubo = Column(JSON)        # [{"name": "Jane Doe", "ownership_pct": 51}]
-    website_url = Column(String(500))
+    jurisdiction_country = Column(String(10))
+    tax_identifier = Column(String(100))
+    registered_address = Column(String(500))
+    director_names = Column(JSON)  # list of strings
+    director_din = Column(JSON)    # list of strings
+    founder_ceo_name = Column(String(255))
+    social_handles = Column(JSON)  # dict
+    corporate_email_domain = Column(String(255))
+    
+    source_method = Column(String(50), default="excel")
+    source_filename = Column(String(255))
+    
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships

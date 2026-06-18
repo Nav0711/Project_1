@@ -1,10 +1,18 @@
-# Environment variables
+# Environment files
 .env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
+*.env
 !.env.example
+
+# Databases & Runtime Data
+*.db
+*.sqlite
+*.sqlite3
+vendorlens.db
+vendorlens.db-journal
 
 # Python
 __pycache__/
@@ -37,6 +45,11 @@ Thumbs.db
 *.sln
 *.sw?
 
-# Editor
+# Editor / IDEs
 .vscode/
 .idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

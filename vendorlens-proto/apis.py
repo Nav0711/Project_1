@@ -1,6 +1,10 @@
 import httpx
 import os
 import logging
+import whois
+import ssl
+import socket
+from datetime import datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -26,6 +30,10 @@ class OpenCorporatesAPI:
                         "api_token": self.api_key
                     }
                 )
+                if response.status_code == 401 or response.status_code == 403:
+                    # If unauthorized or forbidden due to invalid key, return a mocked response 
+                    # so the prototype can still function for demonstration
+                    return {"mocked_due_to_auth_error": True, "error": f"API Key Issue ({response.status_code})"}
                 response.raise_for_status()
                 return response.json()
         except Exception as e:
@@ -44,11 +52,16 @@ class OpenSanctionsAPI:
         
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
+                headers = {}
+                if self.api_key:
+                    headers["Authorization"] = f"ApiKey {self.api_key}"
                 response = await client.get(
                     f"{self.base_url}/search",
-                    params={"q": name},
-                    headers={"Authorization": f"ApiKey {self.api_key}"}
+                    params={"q": name, "fuzzy": "true"},
+                    headers=headers
                 )
+                if response.status_code == 401 or response.status_code == 403:
+                    return {"mocked_due_to_auth_error": True, "error": f"API Key Issue ({response.status_code})"}
                 response.raise_for_status()
                 return response.json()
         except Exception as e:
@@ -80,7 +93,79 @@ class GDELTNewsAPI:
             logger.error(f"GDELT error: {e}")
             return {"error": str(e)}
 
+class WHOISAPI:
+    """Uses python-whois to get domain registration data locally for free."""
+    async def search_domain(self, domain: str) -> dict:
+        if not domain:
+            return {"error": "No domain provided"}
+        if MOCK_MODE:
+            return {"mocked": True, "data": {}}
+        
+        try:
+            domain_info = whois.whois(domain)
+            
+            # whois returns a dict-like object but dates can be lists or single items
+            def get_first_date(d):
+                if isinstance(d, list):
+                    return d[0].isoformat() if d and hasattr(d[0], 'isoformat') else str(d[0])
+                if hasattr(d, 'isoformat'):
+                    return d.isoformat()
+                return str(d)
+
+            creation_date = get_first_date(domain_info.creation_date) if domain_info.creation_date else None
+            expiration_date = get_first_date(domain_info.expiration_date) if domain_info.expiration_date else None
+            
+            return {
+                "domain_name": domain_info.domain_name,
+                "registrar": domain_info.registrar,
+                "creation_date": creation_date,
+                "expiration_date": expiration_date,
+                "emails": domain_info.emails,
+                "status": domain_info.status
+            }
+        except Exception as e:
+            logger.error(f"WHOIS error: {e}")
+            return {"error": str(e)}
+
+class SSLCheckAPI:
+    """Checks SSL certificate validity using Python's ssl module."""
+    async def check_ssl(self, domain: str) -> dict:
+        if not domain:
+            return {"error": "No domain provided"}
+        if MOCK_MODE:
+            return {"mocked": True, "data": {}}
+        
+        try:
+            context = ssl.create_default_context()
+            with socket.create_connection((domain, 443), timeout=10) as sock:
+                with context.wrap_socket(sock, server_hostname=domain) as ssock:
+                    cert = ssock.getpeercert()
+                    
+                    not_before = cert.get('notBefore')
+                    not_after = cert.get('notAfter')
+                    issuer = dict(x[0] for x in cert.get('issuer', []))
+                    
+                    # Convert to datetime to check expiration
+                    expires = ssl.cert_time_to_seconds(not_after)
+                    is_expired = datetime.utcnow().timestamp() > expires
+                    
+                    return {
+                        "issuer": issuer.get('organizationName'),
+                        "not_before": not_before,
+                        "not_after": not_after,
+                        "is_expired": is_expired,
+                        "has_ssl": True
+                    }
+        except Exception as e:
+            logger.error(f"SSL error for {domain}: {e}")
+            return {
+                "error": str(e),
+                "has_ssl": False
+            }
+
 # Initialize API clients
 opencorp = OpenCorporatesAPI()
 opensanctions = OpenSanctionsAPI()
 gdelt = GDELTNewsAPI()
+whois_api = WHOISAPI()
+ssl_api = SSLCheckAPI()
