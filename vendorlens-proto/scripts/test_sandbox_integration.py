@@ -4,9 +4,15 @@ import io
 import sys
 import os
 from fastapi.testclient import TestClient
+from dotenv import load_dotenv
+from pathlib import Path
 
 # Add the parent directory to sys.path so we can import from the main app
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+# Load .env from the parent directory before importing app
+env_path = Path(__file__).parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
 
 from main import app
 

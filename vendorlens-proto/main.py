@@ -13,6 +13,7 @@ import pandas as pd
 from typing import Optional
 import io
 import math
+import re
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -67,6 +68,75 @@ def _split_list(val) -> list[str]:
     s = str(val).strip()
     return [v.strip() for v in s.split(";") if v.strip()] if s else []
 
+COLUMN_MAP = {
+    "legal_name": ["legal_name", "legal name", "name", "company_name", "company", "entity_name", "supplier"],
+    "website_domain": ["website_domain", "website", "website url", "domain", "website_domain_name", "web site", "url"],
+    "registration_number": ["registration_number", "registration no", "registration no.", "registration", "reg no", "reg_number", "bp number", "bp_number"],
+    "jurisdiction_country": ["jurisdiction_country", "country", "jurisdiction", "country_code", "jurisdiction country"],
+    "tax_identifier": ["tax_identifier", "tax id", "tax_id", "tax identifier", "gstin", "gstin-tax no3", "gstin_tax_no3", "pan"],
+    "registered_address": ["registered_address", "address", "registered address", "registered_addr", "street", "street 2", "street 3", "city", "district", "postal code", "postl code"],
+    "director_names": ["director_names", "directors", "director name", "director_names_list"],
+    "director_din": ["director_din", "din", "director din", "director_identification_number"],
+    "founder_ceo_name": ["founder_ceo_name", "founder", "ceo_name", "founder name", "ceo"],
+    "social_handles": ["social_handles", "social media", "social accounts", "social handles"],
+    "corporate_email_domain": ["corporate_email_domain", "email_domain", "corporate email", "email domain"],
+    "email_address": ["email_address", "e_mail_address", "email address", "e-mail address", "email"],
+    "pan_number": ["pan_number", "pan", "pan no", "pan_number"],
+    "city": ["city", "town", "location"],
+    "mobile_number": ["mobile_number", "phone", "mobile", "mobile no", "phone_number", "contact_number"],
+    "msmed_certificate_number": ["msmed_certificate_number", "msmed", "udyam_no", "udyam", "msmed certificate", "msmed number", "msmed cerificate no", "msmed certificate no"],
+}
+
+def normalize_column_name(name: str) -> str:
+    if not isinstance(name, str):
+        return ""
+    normalized = re.sub(r"[^a-z0-9]", "_", name.strip().lower())
+    normalized = re.sub(r"_+", "_", normalized).strip("_")
+    return normalized
+
+
+def _normalize_domain(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    s = str(value).strip().lower()
+    s = re.sub(r"^https?://", "", s)
+    s = re.sub(r"^www\\.", "", s)
+    s = s.split("/", 1)[0].split("?", 1)[0]
+    return s if s else None
+
+
+def _find_email_column(columns: list[str]) -> Optional[str]:
+    normalized = {normalize_column_name(col): col for col in columns}
+    email_candidates = [
+        "email_address",
+        "e_mail_address",
+        "email",
+        "e-mail address",
+        "corporate_email_domain",
+        "email_domain",
+        "corporate email",
+        "email domain",
+    ]
+    for alias in email_candidates:
+        found = normalized.get(normalize_column_name(alias))
+        if found:
+            return found
+    for col in columns:
+        if "email" in normalize_column_name(col) or "e_mail" in normalize_column_name(col):
+            return col
+    return None
+
+def map_columns(columns: list[str]) -> dict[str, str]:
+    mapped = {}
+    normalized_columns = {normalize_column_name(col): col for col in columns}
+    for key, aliases in COLUMN_MAP.items():
+        for alias in aliases:
+            normalized_alias = normalize_column_name(alias)
+            if normalized_alias in normalized_columns:
+                mapped[key] = normalized_columns[normalized_alias]
+                break
+    return mapped
+
 @app.post("/api/v1/vendor/intake", response_model=VendorIntakeResponse)
 async def intake_vendor_excel(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """Accept vendor data via Excel upload and store in DB."""
@@ -75,40 +145,75 @@ async def intake_vendor_excel(file: UploadFile = File(...), db: Session = Depend
     
     try:
         contents = await file.read()
-        df = pd.read_excel(io.BytesIO(contents), sheet_name="Vendor_Intake", dtype=str)
+        try:
+            df = pd.read_excel(io.BytesIO(contents), sheet_name="Vendor_Intake", dtype=str)
+        except ValueError:
+            df = pd.read_excel(io.BytesIO(contents), sheet_name=0, dtype=str)
         if df.empty:
             raise HTTPException(status_code=400, detail="Excel template has no data row")
         
+        columns = list(df.columns)
+        col_map = map_columns(columns)
+        
+        if "legal_name" not in col_map:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Excel must contain a legal_name column. "
+                    f"Detected columns: {columns}"
+                )
+            )
+        
         row = df.iloc[0] # Single vendor per upload
         
-        legal_name = _clean_str(row.get("legal_name"))
-        website_domain = _clean_str(row.get("website_domain"))
+        legal_name = _clean_str(row.get(col_map["legal_name"]))
+        website_domain = _normalize_domain(_clean_str(row.get(col_map.get("website_domain", "")))) if "website_domain" in col_map else None
         
-        if not legal_name or not website_domain:
-            raise HTTPException(status_code=400, detail="Excel must contain legal_name and website_domain")
-            
+        if not legal_name:
+            raise HTTPException(status_code=400, detail="Excel must contain legal_name values")
+
+        if not website_domain:
+            # If no website is provided, try to infer from email if available
+            email_col = col_map.get("email_address") or col_map.get("corporate_email_domain") or _find_email_column(columns)
+            if email_col:
+                email_value = _clean_str(row.get(email_col))
+                if email_value and "@" in email_value:
+                    website_domain = _normalize_domain(email_value.split("@", 1)[1])
+        
+        if not website_domain:
+            raise HTTPException(status_code=400, detail="Excel must contain website_domain or email address values")
+
         social_handles = {}
-        for col, platform in [("linkedin_handle", "linkedin"), ("twitter_handle", "twitter"), ("facebook_handle", "facebook")]:
-            val = _clean_str(row.get(col))
-            if val:
-                social_handles[platform] = val
+        for alias, platform in [("linkedin", "linkedin"), ("twitter", "twitter"), ("facebook", "facebook")]:
+            for col in columns:
+                if normalize_column_name(col).startswith(alias):
+                    val = _clean_str(row.get(col))
+                    if val:
+                        social_handles[platform] = val
+                        break
+
+        def get_mapped_value(field_name: str):
+            return _clean_str(row.get(col_map[field_name])) if field_name in col_map else None
+
+        def get_mapped_list(field_name: str):
+            return _split_list(row.get(col_map[field_name])) if field_name in col_map else []
 
         vendor = VendorInput(
             legal_name=legal_name,
             website_domain=website_domain,
-            registration_number=_clean_str(row.get("registration_number")),
-            jurisdiction_country=_clean_str(row.get("jurisdiction_country")),
-            tax_identifier=_clean_str(row.get("tax_identifier")),
-            registered_address=_clean_str(row.get("registered_address")),
-            director_names=_split_list(row.get("director_names")),
-            director_din=_split_list(row.get("director_din")),
-            founder_ceo_name=_clean_str(row.get("founder_ceo_name")),
+            registration_number=get_mapped_value("registration_number"),
+            jurisdiction_country=get_mapped_value("jurisdiction_country"),
+            tax_identifier=get_mapped_value("tax_identifier"),
+            registered_address=get_mapped_value("registered_address"),
+            director_names=get_mapped_list("director_names"),
+            director_din=get_mapped_list("director_din"),
+            founder_ceo_name=get_mapped_value("founder_ceo_name"),
             social_handles=social_handles,
-            corporate_email_domain=_clean_str(row.get("corporate_email_domain")),
-            pan_number=_clean_str(row.get("pan_number")),
-            city=_clean_str(row.get("city")),
-            mobile_number=_clean_str(row.get("mobile_number")),
-            msmed_certificate_number=_clean_str(row.get("msmed_certificate_number")),
+            corporate_email_domain=get_mapped_value("corporate_email_domain"),
+            pan_number=get_mapped_value("pan_number"),
+            city=get_mapped_value("city"),
+            mobile_number=get_mapped_value("mobile_number"),
+            msmed_certificate_number=get_mapped_value("msmed_certificate_number"),
             source_method="excel",
             source_filename=file.filename
         )

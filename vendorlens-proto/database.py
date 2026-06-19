@@ -3,12 +3,17 @@ from sqlalchemy.orm import sessionmaker
 from models import Base
 from dotenv import load_dotenv
 import os
+from pathlib import Path
 
-load_dotenv()
+# Load .env from the script's directory
+env_path = Path(__file__).parent / ".env"
+load_dotenv(dotenv_path=env_path)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    raise ValueError("DATABASE_URL environment variable is required")
+    # Use SQLite for testing/development if DATABASE_URL is not set
+    print("WARNING: DATABASE_URL not found, using SQLite for testing")
+    DATABASE_URL = "sqlite:///./test.db"
 
 engine = create_engine(
     DATABASE_URL, 
