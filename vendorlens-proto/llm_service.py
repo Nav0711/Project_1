@@ -2,10 +2,11 @@ from anthropic import AsyncAnthropic
 import json
 import os
 import logging
+import random
 
 logger = logging.getLogger(__name__)
 
-MOCK_MODE = os.getenv("MOCK_API_CALLS", "false").lower() == "true"
+MOCK_MODE = os.getenv("MOCK_API_CALLS", "false").lower() == "true" or os.getenv("TEST_MODE", "false").lower() == "true"
 api_key = os.getenv("ANTHROPIC_API_KEY")
 client = AsyncAnthropic(api_key=api_key) if api_key else None
 
@@ -16,52 +17,88 @@ async def extract_findings_from_data(aggregated_data: dict) -> tuple[list, int]:
     """
     
     if MOCK_MODE or not client:
-        logger.info("Using mock LLM response because MOCK_MODE is true or no API key is provided.")
-        return [
-            {
-                "finding_type": "sanctions_match",
-                "severity": "critical",
-                "title": "Mock: Possible Sanctions Match",
-                "description": "This is a mock finding. A potential match was found on an international watch list.",
-                "source_api": "opensanctions",
-                "confidence_score": 0.85
-            },
-            {
-                "finding_type": "news_adverse",
-                "severity": "medium",
-                "title": "Mock: Adverse Media Coverage",
-                "description": "Mock finding: Recent news articles indicate possible involvement in a regulatory dispute.",
-                "source_api": "gdelt",
-                "confidence_score": 0.60
-            }
-        ], 1500  # Return mock findings and 1500 mock tokens
+        logger.info("Using mock LLM response because MOCK_MODE/TEST_MODE is true or no API key is provided.")
+        
+        # Define variable scenarios
+        scenarios = [
+            # Scenario 1: Clean
+            [],
+            # Scenario 2: Critical Sanctions Match
+            [
+                {
+                    "finding_type": "sanctions_match",
+                    "severity": "critical",
+                    "title": "Mock: Possible Sanctions Match",
+                    "description": "This is a mock finding. A potential match was found on an OFAC international watch list.",
+                    "source_api": "opensanctions",
+                    "confidence_score": 0.95
+                }
+            ],
+            # Scenario 3: Medium Adverse Media
+            [
+                {
+                    "finding_type": "news_adverse",
+                    "severity": "medium",
+                    "title": "Mock: Adverse Media Coverage",
+                    "description": "Mock finding: Recent news articles indicate possible involvement in a minor regulatory dispute.",
+                    "source_api": "gdelt",
+                    "confidence_score": 0.65
+                }
+            ],
+            # Scenario 4: High Fraud Risk + Domain Risk
+            [
+                {
+                    "finding_type": "news_adverse",
+                    "severity": "high",
+                    "title": "Mock: Fraud Allegations",
+                    "description": "Mock finding: Multiple search results allege fraudulent business practices and scams.",
+                    "source_api": "serper",
+                    "confidence_score": 0.88
+                },
+                {
+                    "finding_type": "domain_risk",
+                    "severity": "medium",
+                    "title": "Mock: Suspicious Domain",
+                    "description": "Mock finding: Website was registered very recently and lacks standard metadata.",
+                    "source_api": "microlink",
+                    "confidence_score": 0.70
+                }
+            ]
+        ]
+        
+        selected_scenario = random.choice(scenarios)
+        return selected_scenario, 1500  # Return mock findings and 1500 mock tokens
     
     # Build the prompt
     prompt = f"""You are a KYB (Know Your Business) due diligence analyst.
 Analyze the provided data and extract ONLY adverse findings (negative information that increases risk).
-We have gathered data from OpenCorporates, OpenSanctions, GDELT (News), WHOIS, and SSL APIs.
+We have gathered data from OpenCorporates, OpenSanctions, GDELT (News), WHOIS, SSL APIs, Serper (Web Search), NewsAPI, Google Places, and Microlink.
 
 ## Data Provided:
 {json.dumps(aggregated_data, indent=2)}
 
 ## Task:
 For EACH adverse finding, output a JSON object with:
-- finding_type: (sanctions_match | news_adverse | regulatory_issue | pep_match | domain_risk | other)
+- finding_type: (sanctions_match | news_adverse | regulatory_issue | pep_match | domain_risk | address_risk | other)
 - severity: (critical | high | medium | low)
 - title: short summary
 - description: detailed explanation
-- source_api: (opensanctions | gdelt | opencorporates | whois | ssl | sandbox_tsp)
+- source_api: (opensanctions | gdelt | opencorporates | whois | ssl | sandbox_tsp | serper | newsapi | google_places | microlink)
 - confidence_score: 0.0 to 1.0
 
-## Specific Rules for Sandbox TSP (Indian Data):
+## Specific Rules for Analysis:
 - If Sandbox TSP reports GSTIN status as 'Cancelled' or 'Suspended' or valid=false, flag as HIGH risk (regulatory_issue).
 - If Sandbox TSP reports PAN is Inactive or name mismatch, flag as MEDIUM or HIGH risk (regulatory_issue).
 - If Sandbox TSP reports MSMED is invalid, flag as MEDIUM risk.
+- If NewsAPI or GDELT shows fraud, lawsuits, or scandals, flag as HIGH or CRITICAL risk (news_adverse).
+- If Serper search results show bad reviews, fraud allegations, or no official website, flag as MEDIUM or HIGH risk.
+- If Google Places shows the business is permanently closed, has a suspicious address (like a known shell company cluster), or doesn't exist, flag as HIGH risk (address_risk).
+- If Microlink shows the website is unreachable, newly registered, or lacks standard corporate metadata, flag as MEDIUM risk (domain_risk).
 
 ## Output:
 Return ONLY a valid JSON array. No preamble. Example:
 [
-  {{"finding_type": "news_adverse", "severity": "high", "title": "...", "description": "...", "source_api": "gdelt", "confidence_score": 0.85}},
+  {{"finding_type": "news_adverse", "severity": "high", "title": "...", "description": "...", "source_api": "newsapi", "confidence_score": 0.85}},
   {{"finding_type": "sanctions_match", "severity": "critical", "title": "...", "description": "...", "source_api": "opensanctions", "confidence_score": 0.92}}
 ]
 

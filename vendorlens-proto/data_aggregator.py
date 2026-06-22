@@ -1,9 +1,48 @@
-from apis import opencorp, opensanctions, gdelt, whois_api, ssl_api, sandbox_api
+from apis import (
+    opencorp, opensanctions, gdelt, whois_api, ssl_api, sandbox_api,
+    serper_api, news_api, google_places_api, microlink_api
+)
 import asyncio
 import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+async def _safe_call(api_name, coro):
+    try:
+        return api_name, await coro
+    except Exception as e:
+        logger.error(f"{api_name} Aggregation failed: {e}")
+        return api_name, {"error": str(e)}
+
+async def _gather_sanctions(all_names):
+    sanctions_results = {}
+    for name in all_names:
+        if name:
+            sanctions_results[name] = await opensanctions.search_entity(name)
+    return sanctions_results
+
+async def _gather_gdelt(legal_name, founder_ceo_name):
+    news_results = {}
+    news_results[legal_name] = await gdelt.search_news(legal_name)
+    if founder_ceo_name:
+        news_results[founder_ceo_name] = await gdelt.search_news(founder_ceo_name)
+    return news_results
+
+async def _gather_sandbox(jurisdiction_country, tax_identifier, pan_number, msmed_certificate_number):
+    if jurisdiction_country and jurisdiction_country.upper() == "IN":
+        tsp_results = {}
+        if tax_identifier:
+            tsp_results["gstin"] = await sandbox_api.verify_gstin(tax_identifier)
+        if pan_number:
+            tsp_results["pan"] = await sandbox_api.verify_pan(pan_number)
+        if msmed_certificate_number:
+            tsp_results["msmed"] = await sandbox_api.verify_msmed(msmed_certificate_number)
+        return tsp_results
+    return {}
+
+async def _async_return(val):
+    return val
 
 async def aggregate_vendor_data(
     legal_name: str,
@@ -18,94 +57,42 @@ async def aggregate_vendor_data(
     msmed_certificate_number: Optional[str] = None
 ) -> dict:
     """
-    Call all 5 APIs sequentially and aggregate results.
-    For prototype, we don't parallelize to keep it simple and stable.
+    Call all APIs asynchronously and aggregate results.
     """
-    
-    aggregated = {
-        "opencorporates": {},
-        "opensanctions": {},
-        "gdelt": {},
-        "whois": {},
-        "ssl": {},
-        "sandbox_tsp": {}
-    }
-    
-    try:
-        # 1. OpenCorporates: Search for company
-        logger.info(f"Searching OpenCorporates for {legal_name}...")
-        aggregated["opencorporates"] = await opencorp.search_company(
-            legal_name, 
-            jurisdiction=jurisdiction_country.lower() if jurisdiction_country else "us"
-        )
-    except Exception as e:
-        logger.error(f"OpenCorporates Aggregation failed: {e}")
-        aggregated["opencorporates"] = {"error": str(e)}
+    all_names = [legal_name] + (director_names or [])
+    if founder_ceo_name and founder_ceo_name not in all_names:
+        all_names.append(founder_ceo_name)
 
-    try:
-        # 2. OpenSanctions: Check entity + directors + CEO
-        logger.info(f"Searching OpenSanctions for {legal_name} and officers...")
-        all_names = [legal_name] + (director_names or [])
-        if founder_ceo_name and founder_ceo_name not in all_names:
-            all_names.append(founder_ceo_name)
-            
-        sanctions_results = {}
-        for name in all_names:
-            if not name:
-                continue
-            res = await opensanctions.search_entity(name)
-            sanctions_results[name] = res
-            
-        aggregated["opensanctions"] = sanctions_results
-    except Exception as e:
-        logger.error(f"OpenSanctions Aggregation failed: {e}")
-        aggregated["opensanctions"] = {"error": str(e)}
+    tasks = [
+        _safe_call("opencorporates", opencorp.search_company(
+            legal_name, jurisdiction=jurisdiction_country.lower() if jurisdiction_country else "us"
+        )),
+        _safe_call("opensanctions", _gather_sanctions(all_names)),
+        _safe_call("gdelt", _gather_gdelt(legal_name, founder_ceo_name)),
+        _safe_call("serper", serper_api.search(f"{legal_name} official website fraud reviews")),
+        _safe_call("newsapi", news_api.search_news(f"{legal_name} AND (fraud OR scandal OR lawsuit)")),
+    ]
 
-    try:
-        # 3. GDELT: Search for adverse news on company and CEO
-        logger.info(f"Searching GDELT for news about {legal_name}...")
-        news_results = {}
-        news_results[legal_name] = await gdelt.search_news(legal_name)
-        if founder_ceo_name:
-            news_results[founder_ceo_name] = await gdelt.search_news(founder_ceo_name)
-            
-        aggregated["gdelt"] = news_results
-    except Exception as e:
-        logger.error(f"GDELT Aggregation failed: {e}")
-        aggregated["gdelt"] = {"error": str(e)}
-        
-    try:
-        # 4. WHOIS API
-        if website_domain:
-            logger.info(f"Searching WHOIS for domain {website_domain}...")
-            aggregated["whois"] = await whois_api.search_domain(website_domain)
-    except Exception as e:
-        logger.error(f"WHOIS Aggregation failed: {e}")
-        aggregated["whois"] = {"error": str(e)}
-        
-    try:
-        # 5. SSL Check API
-        if website_domain:
-            logger.info(f"Checking SSL for domain {website_domain}...")
-            aggregated["ssl"] = await ssl_api.check_ssl(website_domain)
-    except Exception as e:
-        logger.error(f"SSL Aggregation failed: {e}")
-        aggregated["ssl"] = {"error": str(e)}
-        
-    try:
-        # 6. Sandbox TSP API (India Specific)
-        if jurisdiction_country and jurisdiction_country.upper() == "IN":
-            logger.info(f"Checking Sandbox TSP for Indian vendor {legal_name}...")
-            tsp_results = {}
-            if tax_identifier:  # Assuming tax_identifier maps to GSTIN
-                tsp_results["gstin"] = await sandbox_api.verify_gstin(tax_identifier)
-            if pan_number:
-                tsp_results["pan"] = await sandbox_api.verify_pan(pan_number)
-            if msmed_certificate_number:
-                tsp_results["msmed"] = await sandbox_api.verify_msmed(msmed_certificate_number)
-            aggregated["sandbox_tsp"] = tsp_results
-    except Exception as e:
-        logger.error(f"Sandbox TSP Aggregation failed: {e}")
-        aggregated["sandbox_tsp"] = {"error": str(e)}
-        
+    if website_domain:
+        tasks.extend([
+            _safe_call("whois", whois_api.search_domain(website_domain)),
+            _safe_call("ssl", ssl_api.check_ssl(website_domain)),
+            _safe_call("microlink", microlink_api.get_metadata(website_domain)),
+        ])
+    else:
+        tasks.extend([
+            _safe_call("whois", _async_return({"error": "No domain provided"})),
+            _safe_call("ssl", _async_return({"error": "No domain provided"})),
+            _safe_call("microlink", _async_return({"error": "No domain provided"})),
+        ])
+
+    address_query = f"{legal_name} {jurisdiction_country or ''}"
+    tasks.append(_safe_call("google_places", google_places_api.search_address(address_query)))
+
+    tasks.append(_safe_call("sandbox_tsp", _gather_sandbox(
+        jurisdiction_country, tax_identifier, pan_number, msmed_certificate_number
+    )))
+
+    results = await asyncio.gather(*tasks)
+    aggregated = {k: v for k, v in results}
     return aggregated

@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
-MOCK_MODE = os.getenv("MOCK_API_CALLS", "false").lower() == "true"
+MOCK_MODE = os.getenv("MOCK_API_CALLS", "false").lower() == "true" or os.getenv("TEST_MODE", "false").lower() == "true"
 
 class OpenCorporatesAPI:
     def __init__(self):
@@ -35,7 +35,22 @@ class OpenCorporatesAPI:
                     # so the prototype can still function for demonstration
                     return {"mocked_due_to_auth_error": True, "error": f"API Key Issue ({response.status_code})"}
                 response.raise_for_status()
-                return response.json()
+                data = response.json()
+                results = data.get("results", {}).get("companies", [])[:3]
+                return {
+                    "companies": [
+                        {
+                            "name": c.get("company", {}).get("name"),
+                            "company_number": c.get("company", {}).get("company_number"),
+                            "jurisdiction_code": c.get("company", {}).get("jurisdiction_code"),
+                            "incorporation_date": c.get("company", {}).get("incorporation_date"),
+                            "dissolution_date": c.get("company", {}).get("dissolution_date"),
+                            "company_type": c.get("company", {}).get("company_type"),
+                            "current_status": c.get("company", {}).get("current_status")
+                        }
+                        for c in results
+                    ]
+                }
         except Exception as e:
             logger.error(f"OpenCorporates error: {e}")
             return {"error": str(e)}
@@ -63,7 +78,23 @@ class OpenSanctionsAPI:
                 if response.status_code == 401 or response.status_code == 403:
                     return {"mocked_due_to_auth_error": True, "error": f"API Key Issue ({response.status_code})"}
                 response.raise_for_status()
-                return response.json()
+                data = response.json()
+                results = data.get("results", [])[:3]
+                return {
+                    "results": [
+                        {
+                            "id": item.get("id"),
+                            "caption": item.get("caption"),
+                            "schema": item.get("schema"),
+                            "properties": {
+                                "name": item.get("properties", {}).get("name"),
+                                "country": item.get("properties", {}).get("country"),
+                                "status": item.get("properties", {}).get("status")
+                            }
+                        }
+                        for item in results
+                    ]
+                }
         except Exception as e:
             logger.error(f"OpenSanctions error: {e}")
             return {"error": str(e)}
@@ -83,12 +114,19 @@ class GDELTNewsAPI:
                     params={
                         "query": f'"{company_name}" (fraud OR bankruptcy OR scandal OR lawsuit)',
                         "format": "json",
-                        "maxrecords": 10,
+                        "maxrecords": 5,
                         "sort": "DateDesc"
                     }
                 )
                 response.raise_for_status()
-                return response.json()
+                data = response.json()
+                results = data.get("result", [])[:3]
+                return {
+                    "results": [
+                        {"title": item.get("title"), "url": item.get("url"), "domain": item.get("domain")}
+                        for item in results
+                    ]
+                }
         except Exception as e:
             logger.error(f"GDELT error: {e}")
             return {"error": str(e)}
@@ -218,6 +256,135 @@ class SandboxAPI:
             "status": "Active"
         }
 
+class SerperAPI:
+    def __init__(self):
+        self.api_key = os.getenv("SERPER_API_KEY")
+        self.base_url = "https://google.serper.dev/search"
+
+    async def search(self, query: str) -> dict:
+        if MOCK_MODE:
+            return {"mocked": True, "data": {}}
+        if not self.api_key:
+            return {"error": "Missing SERPER_API_KEY"}
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    self.base_url,
+                    headers={"X-API-KEY": self.api_key, "Content-Type": "application/json"},
+                    json={"q": query}
+                )
+                response.raise_for_status()
+                data = response.json()
+                organic = data.get("organic", [])[:3]
+                return {
+                    "organic": [
+                        {"title": item.get("title"), "link": item.get("link"), "snippet": item.get("snippet")}
+                        for item in organic
+                    ]
+                }
+        except Exception as e:
+            logger.error(f"Serper API error: {e}")
+            return {"error": str(e)}
+
+class NewsAPIClient:
+    def __init__(self):
+        self.api_key = os.getenv("NEWS_API_KEY")
+        self.base_url = "https://newsapi.org/v2/everything"
+
+    async def search_news(self, query: str) -> dict:
+        if MOCK_MODE:
+            return {"mocked": True, "data": {}}
+        if not self.api_key:
+            return {"error": "Missing NEWS_API_KEY"}
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(
+                    self.base_url,
+                    params={"q": query, "apiKey": self.api_key, "language": "en"}
+                )
+                response.raise_for_status()
+                data = response.json()
+                articles = data.get("articles", [])[:3]
+                return {
+                    "articles": [
+                        {
+                            "title": item.get("title"),
+                            "description": item.get("description"),
+                            "url": item.get("url"),
+                            "publishedAt": item.get("publishedAt"),
+                            "source": item.get("source", {}).get("name")
+                        }
+                        for item in articles
+                    ]
+                }
+        except Exception as e:
+            logger.error(f"NewsAPI error: {e}")
+            return {"error": str(e)}
+
+class GooglePlacesAPI:
+    def __init__(self):
+        self.api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+        self.base_url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+
+    async def search_address(self, query: str) -> dict:
+        if MOCK_MODE:
+            return {"mocked": True, "data": {}}
+        if not self.api_key:
+            return {"error": "Missing GOOGLE_MAPS_API_KEY"}
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(
+                    self.base_url,
+                    params={"query": query, "key": self.api_key}
+                )
+                response.raise_for_status()
+                data = response.json()
+                results = data.get("results", [])[:2]
+                return {
+                    "results": [
+                        {
+                            "name": item.get("name"),
+                            "formatted_address": item.get("formatted_address"),
+                            "rating": item.get("rating"),
+                            "business_status": item.get("business_status")
+                        }
+                        for item in results
+                    ]
+                }
+        except Exception as e:
+            logger.error(f"Google Places API error: {e}")
+            return {"error": str(e)}
+
+class MicrolinkAPI:
+    def __init__(self):
+        self.api_key = os.getenv("MICROLINK_API_KEY")
+        self.base_url = "https://api.microlink.io/"
+
+    async def get_metadata(self, url: str) -> dict:
+        if MOCK_MODE:
+            return {"mocked": True, "data": {}}
+        try:
+            headers = {"x-api-key": self.api_key} if self.api_key else {}
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(
+                    self.base_url,
+                    params={"url": f"http://{url}" if not url.startswith("http") else url},
+                    headers=headers
+                )
+                response.raise_for_status()
+                data = response.json()
+                sub_data = data.get("data", {})
+                return {
+                    "status": data.get("status"),
+                    "title": sub_data.get("title"),
+                    "description": sub_data.get("description"),
+                    "publisher": sub_data.get("publisher"),
+                    "logo": sub_data.get("logo", {}).get("url") if isinstance(sub_data.get("logo"), dict) else None
+                }
+        except Exception as e:
+            logger.error(f"Microlink API error: {e}")
+            return {"error": str(e)}
+
 # Initialize API clients
 opencorp = OpenCorporatesAPI()
 opensanctions = OpenSanctionsAPI()
@@ -225,3 +392,7 @@ gdelt = GDELTNewsAPI()
 whois_api = WHOISAPI()
 ssl_api = SSLCheckAPI()
 sandbox_api = SandboxAPI()
+serper_api = SerperAPI()
+news_api = NewsAPIClient()
+google_places_api = GooglePlacesAPI()
+microlink_api = MicrolinkAPI()
