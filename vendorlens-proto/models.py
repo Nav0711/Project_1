@@ -21,6 +21,10 @@ class VendorInput(Base):
     founder_ceo_name = Column(String(255))
     social_handles = Column(JSON)  
     corporate_email_domain = Column(String(255))
+    pan_number = Column(String(50))
+    msmed_certificate_number = Column(String(100))
+    mobile_number = Column(String(50))
+    city = Column(String(100))
     
     source_method = Column(String(10), default="manual")
     source_filename = Column(String(255))
