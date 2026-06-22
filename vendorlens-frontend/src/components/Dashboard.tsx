@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { AlertCircle, CheckCircle2, ShieldAlert } from 'lucide-react';
+import { AlertCircle, CheckCircle2, ShieldAlert, ArrowLeft, RefreshCw, XCircle } from 'lucide-react';
 
 const Dashboard = () => {
   const { scanId } = useParams();
+  const navigate = useNavigate();
   const [status, setStatus] = useState('PENDING');
   const [report, setReport] = useState<any>(null);
 
@@ -41,6 +42,12 @@ const Dashboard = () => {
         <div className="w-full bg-secondary rounded-full h-2">
           <div className="bg-primary h-2 rounded-full animate-pulse" style={{ width: '60%' }}></div>
         </div>
+        <button 
+          onClick={() => navigate('/')} 
+          className="mt-8 inline-flex items-center text-sm font-medium text-muted-foreground hover:text-destructive transition-colors"
+        >
+          <XCircle className="w-4 h-4 mr-2" /> Cancel and Return Home
+        </button>
       </div>
     );
   }
@@ -59,7 +66,16 @@ const Dashboard = () => {
 
   return (
     <div className="max-w-5xl mx-auto space-y-8">
-      <div className="flex items-start justify-between">
+      <div className="flex items-center justify-between">
+        <button 
+          onClick={() => navigate('/')} 
+          className="inline-flex items-center text-sm font-medium text-muted-foreground hover:text-primary transition-colors"
+        >
+          <ArrowLeft className="w-4 h-4 mr-1" /> New Scan
+        </button>
+      </div>
+
+      <div className="flex items-start justify-between border-b pb-6">
         <div>
           <h2 className="text-3xl font-bold tracking-tight">{report.subject.legal_name}</h2>
           <p className="text-muted-foreground">{report.subject.domain} • {report.subject.scan_type.toUpperCase()} SCAN</p>
@@ -77,7 +93,7 @@ const Dashboard = () => {
         <div className="bg-card border rounded-xl p-6 shadow-sm md:col-span-2">
           <div className="text-sm font-medium text-muted-foreground mb-4">Findings Breakdown</div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {Object.entries(report.risk_summary.findings_by_category).map(([cat, count]: any) => (
+            {Object.entries(report.risk_summary.findings_by_category || {}).map(([cat, count]: any) => (
               <div key={cat} className="text-center p-3 bg-secondary/50 rounded-lg">
                 <div className="text-2xl font-bold text-primary">{count}</div>
                 <div className="text-xs text-muted-foreground capitalize">{cat.replace('_', ' ')}</div>
@@ -86,6 +102,26 @@ const Dashboard = () => {
           </div>
         </div>
       </div>
+
+      {/* New Token Display Section */}
+      {(report.tokens_used !== undefined || report.tokens_remaining !== undefined) && (
+        <div className="grid md:grid-cols-2 gap-6">
+          <div className="bg-secondary/20 border border-secondary rounded-xl p-5 flex items-center justify-between">
+            <div>
+              <div className="text-sm font-medium text-muted-foreground">Tokens Consumed</div>
+              <div className="text-2xl font-bold text-foreground mt-1">{report.tokens_used?.toLocaleString() || 0}</div>
+            </div>
+            <RefreshCw className="w-8 h-8 text-muted-foreground opacity-50" />
+          </div>
+          <div className="bg-secondary/20 border border-secondary rounded-xl p-5 flex items-center justify-between">
+            <div>
+              <div className="text-sm font-medium text-muted-foreground">Remaining API Balance</div>
+              <div className="text-2xl font-bold text-foreground mt-1">{report.tokens_remaining?.toLocaleString() || 0}</div>
+            </div>
+            <CheckCircle2 className="w-8 h-8 text-green-500 opacity-50" />
+          </div>
+        </div>
+      )}
 
       {report.adverse_findings.length > 0 && (
         <div className="space-y-4">

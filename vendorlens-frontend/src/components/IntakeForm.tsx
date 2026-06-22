@@ -1,11 +1,13 @@
-import React, { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { UploadCloud, FileText, Send } from 'lucide-react';
+import { UploadCloud, FileText, Send, XCircle } from 'lucide-react';
 
 const IntakeForm = () => {
   const navigate = useNavigate();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     legal_name: '',
     website_domain: '',
@@ -34,17 +36,46 @@ const IntakeForm = () => {
     if (!selectedFile) return;
     setFile(selectedFile);
     setLoading(true);
+    setErrorMsg(null);
     
     try {
       const payload = new FormData();
       payload.append('file', selectedFile);
       const res = await axios.post('http://localhost:8000/vendor/parse-excel', payload);
       setParsedVendors(res.data.vendors || []);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      alert('Error parsing Excel file');
+      setErrorMsg(err.response?.data?.detail || 'Error parsing Excel file');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleClear = () => {
+    setFormData({
+      legal_name: '',
+      website_domain: '',
+      registration_number: '',
+      jurisdiction_country: '',
+      tax_identifier: '',
+      registered_address: '',
+      director_names: '',
+      director_din: '',
+      founder_ceo_name: '',
+      linkedin_handle: '',
+      twitter_handle: '',
+      facebook_handle: '',
+      corporate_email_domain: '',
+      pan_number: '',
+      city: '',
+      mobile_number: '',
+      msmed_certificate_number: ''
+    });
+    setFile(null);
+    setParsedVendors([]);
+    setErrorMsg(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
   };
 
@@ -84,9 +115,9 @@ const IntakeForm = () => {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
       navigate(`/scan/${res.data.input_id}`);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      alert('Error submitting intake');
+      setErrorMsg(err.response?.data?.detail || 'Error submitting intake');
     } finally {
       setLoading(false);
     }
@@ -108,6 +139,7 @@ const IntakeForm = () => {
           <p className="text-sm text-muted-foreground">Upload Vendor spreadsheet to autofill fields.</p>
           <input 
             type="file" 
+            ref={fileInputRef}
             accept=".xlsx,.xls"
             onChange={handleFileUpload}
             className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20"
@@ -177,9 +209,20 @@ const IntakeForm = () => {
           </div>
         </div>
 
-        <button disabled={loading} className="w-full inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2 disabled:opacity-50">
-          {loading ? 'Processing...' : <><Send className="w-4 h-4 mr-2" /> Start Background Scan</>}
-        </button>
+        {errorMsg && (
+          <div className="bg-red-50 text-red-700 p-3 rounded-md border border-red-200 text-sm font-medium">
+            {errorMsg}
+          </div>
+        )}
+
+        <div className="flex space-x-4">
+          <button type="button" onClick={handleClear} disabled={loading} className="w-1/3 inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2 disabled:opacity-50">
+            <XCircle className="w-4 h-4 mr-2" /> Clear Form
+          </button>
+          <button type="submit" disabled={loading} className="w-2/3 inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2 disabled:opacity-50">
+            {loading ? 'Processing...' : <><Send className="w-4 h-4 mr-2" /> Start Background Scan</>}
+          </button>
+        </div>
       </form>
     </div>
   );
