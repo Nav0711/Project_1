@@ -30,6 +30,57 @@ class ScanRequest(BaseModel):
     input_id: str
     scan_type: str # quick or deep
 
+def map_excel_columns(row_dict: dict) -> dict:
+    """Flexible column mapping logic for Excel uploads."""
+    # Convert keys to lower case for easier matching
+    normalized_keys = {k.lower().strip(): k for k in row_dict.keys() if isinstance(k, str)}
+    
+    def get_value(*possible_keys):
+        for pk in possible_keys:
+            for nk in normalized_keys:
+                if pk in nk:
+                    val = row_dict[normalized_keys[nk]]
+                    # Handle NaNs
+                    if pd.isna(val): return ""
+                    return str(val).strip()
+        return ""
+
+    return {
+        "legal_name": get_value("legal_name", "name", "supplier", "vendor name"),
+        "website_domain": get_value("website_domain", "domain", "website"),
+        "registration_number": get_value("registration_number", "bp number", "vendor id", "reg no"),
+        "jurisdiction_country": get_value("jurisdiction_country", "country"),
+        "tax_identifier": get_value("tax_identifier", "tax no", "gstin"),
+        "registered_address": get_value("registered_address", "address"),
+        "director_names": get_value("director_names", "directors", "board"),
+        "director_din": get_value("director_din", "din"),
+        "founder_ceo_name": get_value("founder_ceo_name", "ceo", "founder"),
+        "corporate_email_domain": get_value("corporate_email_domain", "email domain"),
+        "pan_number": get_value("pan_number", "pan", "pan no"),
+        "city": get_value("city", "location"),
+        "mobile_number": get_value("mobile_number", "mobile", "phone"),
+        "msmed_certificate_number": get_value("msmed_certificate_number", "msmed", "udyam")
+    }
+
+@app.post("/vendor/parse-excel")
+async def parse_excel(file: UploadFile = File(...)):
+    try:
+        contents = await file.read()
+        df = pd.read_excel(io.BytesIO(contents), sheet_name=0, dtype=str).fillna("")
+        if df.empty:
+            raise HTTPException(400, "Excel file is empty")
+        
+        parsed_vendors = []
+        for _, row in df.iterrows():
+            row_dict = row.to_dict()
+            mapped = map_excel_columns(row_dict)
+            if mapped["legal_name"]: # Only include rows with at least a name
+                parsed_vendors.append(mapped)
+                
+        return {"vendors": parsed_vendors}
+    except Exception as e:
+        raise HTTPException(400, f"Error parsing Excel: {str(e)}")
+
 @app.post("/vendor/intake")
 async def create_intake(
     excel_file: UploadFile = File(default=None),
@@ -47,19 +98,21 @@ async def create_intake(
             if df.empty:
                 raise HTTPException(400, "Excel template has no data row")
             row = df.iloc[0].to_dict()
-            record_data = {
-                "legal_name": row.get("legal_name", "").strip(),
-                "website_domain": row.get("website_domain", "").strip(),
-                "registration_number": row.get("registration_number", "").strip(),
-                "jurisdiction_country": row.get("jurisdiction_country", "").strip(),
-                "tax_identifier": row.get("tax_identifier", "").strip(),
-                "registered_address": row.get("registered_address", "").strip(),
-                "director_names": [v.strip() for v in row.get("director_names", "").split(";") if v.strip()],
-                "director_din": [v.strip() for v in row.get("director_din", "").split(";") if v.strip()],
-                "founder_ceo_name": row.get("founder_ceo_name", "").strip(),
-                "social_handles": {},
-                "corporate_email_domain": row.get("corporate_email_domain", "").strip()
-            }
+            record_data = map_excel_columns(row)
+            
+            # Reformat list fields that were joined by semicolon
+            if record_data.get("director_names"):
+                record_data["director_names"] = [v.strip() for v in record_data["director_names"].split(";") if v.strip()]
+            else:
+                record_data["director_names"] = []
+                
+            if record_data.get("director_din"):
+                record_data["director_din"] = [v.strip() for v in record_data["director_din"].split(";") if v.strip()]
+            else:
+                record_data["director_din"] = []
+                
+            record_data["social_handles"] = {}
+
             source_method = 'excel'
             source_filename = excel_file.filename
         elif manual_fields:
@@ -79,6 +132,10 @@ async def create_intake(
             founder_ceo_name=record_data.get('founder_ceo_name'),
             social_handles=record_data.get('social_handles', {}),
             corporate_email_domain=record_data.get('corporate_email_domain'),
+            pan_number=record_data.get('pan_number'),
+            city=record_data.get('city'),
+            mobile_number=record_data.get('mobile_number'),
+            msmed_certificate_number=record_data.get('msmed_certificate_number'),
             source_method=source_method,
             source_filename=source_filename
         )
@@ -112,8 +169,8 @@ async def run_scan_workflow(scan_id: str, input_id: str, scan_type: str):
             director_din=vendor.director_din or [],
             founder_ceo_name=vendor.founder_ceo_name,
             tax_identifier=vendor.tax_identifier,
-            pan_number=None,
-            msmed_certificate_number=None
+            pan_number=vendor.pan_number,
+            msmed_certificate_number=vendor.msmed_certificate_number
         )
 
         # Simulate delay to match "processing time" expectations

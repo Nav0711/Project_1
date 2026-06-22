@@ -164,59 +164,163 @@ class SSLCheckAPI:
             }
 
 class SandboxAPI:
-    """Mock implementation for Sandbox.co.in TSP."""
+    """Implementation for Sandbox.co.in TSP."""
     def __init__(self):
-        self.api_key = os.getenv("SANDBOX_API_KEY", "dummy_key")
-        self.base_url = "https://api.sandbox.co.in/v1"
+        self.api_key = os.getenv("SANDBOX_API_KEY")
+        self.api_secret = os.getenv("SANDBOX_API_SECRET")
+        self.base_url = "https://api.sandbox.co.in"
+        self.access_token = None
+        self.token_expiry = None
+
+    async def _authenticate(self, client: httpx.AsyncClient):
+        """Get or refresh access token."""
+        if not self.api_key or not self.api_secret:
+            raise ValueError("Sandbox API credentials missing")
+            
+        if self.access_token and self.token_expiry and datetime.utcnow() < self.token_expiry:
+            return self.access_token
+
+        response = await client.post(
+            f"{self.base_url}/authenticate",
+            headers={
+                "x-api-key": self.api_key,
+                "x-api-secret": self.api_secret,
+                "x-api-version": "1.0"
+            }
+        )
+        response.raise_for_status()
+        data = response.json()
+        self.access_token = data.get("access_token")
+        # Assume 24 hr expiry roughly
+        self.token_expiry = datetime.utcnow()
+        return self.access_token
+
+    async def _get_auth_headers(self, client: httpx.AsyncClient):
+        token = await self._authenticate(client)
+        return {
+            "Authorization": f"Bearer {token}",
+            "x-api-key": self.api_key,
+            "x-api-version": "1.0"
+        }
 
     async def verify_gstin(self, gstin: str) -> dict:
-        """Dummy response for GSTIN verification."""
+        """Live/Mock response for GSTIN verification."""
         if not gstin:
             return {"error": "No GSTIN provided"}
         
-        # Mock logic based on input string
-        if "INVALID" in gstin.upper():
-            return {"valid": False, "status": "Cancelled", "taxpayer_name": None}
-            
-        return {
-            "valid": True,
-            "status": "Active",
-            "taxpayer_name": "Mocked Taxpayer Pvt Ltd",
-            "registration_date": "2020-01-01",
-            "taxpayer_type": "Regular",
-            "gstin": gstin
-        }
+        if MOCK_MODE:
+            if "INVALID" in gstin.upper():
+                return {"valid": False, "status": "Cancelled", "taxpayer_name": None}
+            return {
+                "valid": True,
+                "status": "Active",
+                "taxpayer_name": "Mocked Taxpayer Pvt Ltd",
+                "registration_date": "2020-01-01",
+                "taxpayer_type": "Regular",
+                "gstin": gstin
+            }
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                headers = await self._get_auth_headers(client)
+                # Note: Sandbox API endpoint structure based on plan
+                response = await client.get(
+                    f"{self.base_url}/gsp/gstin/{gstin}",
+                    headers=headers
+                )
+                response.raise_for_status()
+                data = response.json().get("data", {})
+                
+                # Check status
+                status = data.get("sts", "")
+                return {
+                    "valid": status.upper() == "ACTIVE",
+                    "status": status,
+                    "taxpayer_name": data.get("tradeNam") or data.get("lgnm"),
+                    "registration_date": data.get("rgdt"),
+                    "gstin": gstin,
+                    "raw_response": data
+                }
+        except Exception as e:
+            logger.error(f"Sandbox GSTIN error: {e}")
+            return {"error": str(e), "valid": False}
         
     async def verify_pan(self, pan: str) -> dict:
-        """Dummy response for PAN verification."""
+        """Live/Mock response for PAN verification."""
         if not pan:
             return {"error": "No PAN provided"}
             
-        if "INVALID" in pan.upper():
-            return {"valid": False, "name": None, "status": "Inactive"}
-            
-        return {
-            "valid": True,
-            "status": "Active",
-            "name": "Mocked Taxpayer Pvt Ltd",
-            "pan": pan
-        }
+        if MOCK_MODE:
+            if "INVALID" in pan.upper():
+                return {"valid": False, "name": None, "status": "Inactive"}
+            return {
+                "valid": True,
+                "status": "Active",
+                "name": "Mocked Taxpayer Pvt Ltd",
+                "pan": pan
+            }
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                headers = await self._get_auth_headers(client)
+                response = await client.post(
+                    f"{self.base_url}/kyc/pan",
+                    headers=headers,
+                    json={"pan": pan, "consent": "Y", "reason": "KYB Verification"}
+                )
+                response.raise_for_status()
+                data = response.json().get("data", {})
+                
+                status = data.get("status", "")
+                return {
+                    "valid": status.upper() == "VALID",
+                    "status": status,
+                    "name": data.get("full_name"),
+                    "pan": pan,
+                    "raw_response": data
+                }
+        except Exception as e:
+            logger.error(f"Sandbox PAN error: {e}")
+            return {"error": str(e), "valid": False}
         
     async def verify_msmed(self, msmed_num: str) -> dict:
-        """Dummy response for MSMED/Udyam verification."""
+        """Live/Mock response for MSMED/Udyam verification."""
         if not msmed_num:
             return {"error": "No MSMED number provided"}
             
-        if "INVALID" in msmed_num.upper():
-            return {"valid": False, "enterprise_type": None}
-            
-        return {
-            "valid": True,
-            "enterprise_type": "Micro",
-            "name": "Mocked Taxpayer Pvt Ltd",
-            "msmed_number": msmed_num,
-            "status": "Active"
-        }
+        if MOCK_MODE:
+            if "INVALID" in msmed_num.upper():
+                return {"valid": False, "enterprise_type": None}
+            return {
+                "valid": True,
+                "enterprise_type": "Micro",
+                "name": "Mocked Taxpayer Pvt Ltd",
+                "msmed_number": msmed_num,
+                "status": "Active"
+            }
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                headers = await self._get_auth_headers(client)
+                # MSMED/Udyam is typically at kyc/udyam
+                response = await client.post(
+                    f"{self.base_url}/kyc/udyam",
+                    headers=headers,
+                    json={"udyam_number": msmed_num, "consent": "Y"}
+                )
+                response.raise_for_status()
+                data = response.json().get("data", {})
+                
+                return {
+                    "valid": True if data else False,
+                    "enterprise_type": data.get("enterprise_type", "Unknown"),
+                    "name": data.get("company_name"),
+                    "msmed_number": msmed_num,
+                    "status": "Active" if data else "Inactive"
+                }
+        except Exception as e:
+            logger.error(f"Sandbox MSMED error: {e}")
+            return {"error": str(e), "valid": False}
 
 # Initialize API clients
 opencorp = OpenCorporatesAPI()
