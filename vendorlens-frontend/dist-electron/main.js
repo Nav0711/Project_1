@@ -1,24 +1,35 @@
-import { BrowserWindow as e, app as t } from "electron";
-import n from "node:path";
-import { fileURLToPath as r } from "node:url";
+import { BrowserWindow, app } from "electron";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 //#region electron/main.ts
-var i = r(import.meta.url), a = n.dirname(i);
-process.env.DIST = n.join(a, "../dist"), process.env.VITE_PUBLIC = t.isPackaged ? process.env.DIST : n.join(process.env.DIST, "../public");
-var o, s = process.env.VITE_DEV_SERVER_URL;
-function c() {
-	o = new e({
-		icon: n.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
-		webPreferences: { preload: n.join(a, "preload.js") },
+var __filename = fileURLToPath(import.meta.url);
+var __dirname = path.dirname(__filename);
+process.env.DIST = path.join(__dirname, "../dist");
+process.env.VITE_PUBLIC = app.isPackaged ? process.env.DIST : path.join(process.env.DIST, "../public");
+var win;
+var VITE_DEV_SERVER_URL = process.env["VITE_DEV_SERVER_URL"];
+function createWindow() {
+	win = new BrowserWindow({
+		icon: path.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
+		webPreferences: { preload: path.join(__dirname, "preload.js") },
 		width: 1200,
 		height: 800
-	}), o.webContents.on("did-finish-load", () => {
-		o?.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
-	}), s ? o.loadURL(s) : o.loadFile(n.join(process.env.DIST, "index.html"));
+	});
+	win.webContents.on("did-finish-load", () => {
+		win?.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
+	});
+	if (VITE_DEV_SERVER_URL) win.loadURL(VITE_DEV_SERVER_URL);
+	else win.loadFile(path.join(process.env.DIST, "index.html"));
 }
-t.on("window-all-closed", () => {
-	process.platform !== "darwin" && (t.quit(), o = null);
-}), t.on("activate", () => {
-	e.getAllWindows().length === 0 && c();
-}), t.whenReady().then(c);
+app.on("window-all-closed", () => {
+	if (process.platform !== "darwin") {
+		app.quit();
+		win = null;
+	}
+});
+app.on("activate", () => {
+	if (BrowserWindow.getAllWindows().length === 0) createWindow();
+});
+app.whenReady().then(createWindow);
 //#endregion
 export {};
