@@ -36,7 +36,7 @@ class OpenCorporatesAPI:
                     return {"mocked_due_to_auth_error": True, "error": f"API Key Issue ({response.status_code})"}
                 response.raise_for_status()
                 data = response.json()
-                results = data.get("results", {}).get("companies", [])[:3]
+                results = data.get("results", {}).get("companies", [])[:10]
                 return {
                     "companies": [
                         {
@@ -58,28 +58,32 @@ class OpenCorporatesAPI:
 class OpenSanctionsAPI:
     def __init__(self):
         self.api_key = os.getenv("OPENSANCTIONS_API_KEY")
-        self.base_url = "https://api.opensanctions.org/v2"
-    
+        # Correct yente-based hosted API — no version prefix, dataset in path
+        self.base_url = "https://api.opensanctions.org"
+
     async def search_entity(self, name: str) -> dict:
         """Search for sanctions/PEP matches."""
         if MOCK_MODE:
             return {"mocked": True, "data": {}}
-        
+
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                headers = {}
+                headers = {"Accept": "application/json"}
                 if self.api_key:
                     headers["Authorization"] = f"ApiKey {self.api_key}"
                 response = await client.get(
-                    f"{self.base_url}/search",
-                    params={"q": name, "fuzzy": "true"},
+                    f"{self.base_url}/search/default",
+                    params={"q": name, "fuzzy": "true", "limit": 10},
                     headers=headers
                 )
-                if response.status_code == 401 or response.status_code == 403:
+                if response.status_code in (401, 403):
                     return {"mocked_due_to_auth_error": True, "error": f"API Key Issue ({response.status_code})"}
+                if response.status_code == 404:
+                    logger.warning(f"OpenSanctions 404 for query '{name}' — returning no results")
+                    return {"results": []}
                 response.raise_for_status()
                 data = response.json()
-                results = data.get("results", [])[:3]
+                results = data.get("results", [])[:10]
                 return {
                     "results": [
                         {
@@ -114,13 +118,13 @@ class GDELTNewsAPI:
                     params={
                         "query": f'"{company_name}" (fraud OR bankruptcy OR scandal OR lawsuit)',
                         "format": "json",
-                        "maxrecords": 5,
+                        "maxrecords": 10,
                         "sort": "DateDesc"
                     }
                 )
                 response.raise_for_status()
                 data = response.json()
-                results = data.get("result", [])[:3]
+                results = data.get("result", [])[:10]
                 return {
                     "results": [
                         {"title": item.get("title"), "url": item.get("url"), "domain": item.get("domain")}
@@ -383,7 +387,7 @@ class SerperAPI:
                 )
                 response.raise_for_status()
                 data = response.json()
-                organic = data.get("organic", [])[:3]
+                organic = data.get("organic", [])[:10]
                 return {
                     "organic": [
                         {"title": item.get("title"), "link": item.get("link"), "snippet": item.get("snippet")}
@@ -408,11 +412,11 @@ class NewsAPIClient:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.get(
                     self.base_url,
-                    params={"q": query, "apiKey": self.api_key, "language": "en"}
+                    params={"q": query, "apiKey": self.api_key, "language": "en", "pageSize": 10}
                 )
                 response.raise_for_status()
                 data = response.json()
-                articles = data.get("articles", [])[:3]
+                articles = data.get("articles", [])[:10]
                 return {
                     "articles": [
                         {
@@ -447,7 +451,7 @@ class GooglePlacesAPI:
                 )
                 response.raise_for_status()
                 data = response.json()
-                results = data.get("results", [])[:2]
+                results = data.get("results", [])[:5]
                 return {
                     "results": [
                         {

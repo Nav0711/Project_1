@@ -9,6 +9,7 @@ import FindingsTab from './dashboard/FindingsTab';
 import NewsTab from './dashboard/NewsTab';
 import WebTab from './dashboard/WebTab';
 import IndiaTab from './dashboard/IndiaTab';
+import ScanLoading from './dashboard/ScanLoading';
 
 const Dashboard = () => {
   const { scanId } = useParams();
@@ -19,42 +20,48 @@ const Dashboard = () => {
 
   useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
+    const TERMINAL = ['COMPLETED', 'ERROR'];
     const check = async () => {
       try {
         const res = await axios.get(`http://localhost:8000/scan/${scanId}/status`);
-        setStatus(res.data.status);
-        if (res.data.status === 'COMPLETED') {
+        const s = res.data.status;
+        setStatus(s);
+        if (TERMINAL.includes(s)) {
           clearInterval(interval);
-          const rep = await axios.get(`http://localhost:8000/scan/${scanId}/report`);
-          setReport(rep.data);
+          if (s === 'COMPLETED') {
+            const rep = await axios.get(`http://localhost:8000/scan/${scanId}/report`);
+            setReport(rep.data);
+          }
         }
       } catch (err) { console.error(err); }
     };
     check();
-    if (status !== 'COMPLETED') interval = setInterval(check, 3000);
+    if (!TERMINAL.includes(status)) interval = setInterval(check, 3000);
     return () => clearInterval(interval);
   }, [scanId, status]);
 
-  // ── Loading state ──────────────────────────────────────────────────────────
-  if (status !== 'COMPLETED') {
+  // ── Error state ────────────────────────────────────────────────────────────
+  if (status === 'ERROR') {
     return (
-      <div className="max-w-xl mx-auto mt-20 p-8 bg-card border rounded-2xl shadow-sm text-center space-y-5">
-        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary mx-auto" />
+      <div className="max-w-xl mx-auto mt-20 p-8 bg-card border border-destructive/30 rounded-2xl shadow-sm text-center space-y-4">
+        <XCircle className="w-10 h-10 text-destructive mx-auto" />
         <div>
-          <h2 className="text-xl font-semibold text-foreground">Scan in Progress</h2>
+          <h2 className="text-xl font-semibold text-foreground">Scan Failed</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            AI agents are querying multiple data sources…
+            The scan could not be completed. Check the backend logs for details.
           </p>
         </div>
-        <div className="w-full bg-secondary rounded-full h-1.5 overflow-hidden">
-          <div className="bg-primary h-1.5 rounded-full animate-pulse w-3/5" />
-        </div>
         <button onClick={() => navigate('/')}
-          className="inline-flex items-center text-sm text-muted-foreground hover:text-destructive transition-colors">
-          <XCircle className="w-4 h-4 mr-1.5" /> Cancel
+          className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-secondary hover:bg-secondary/80 transition-colors">
+          <ArrowLeft className="w-4 h-4" /> Back to Home
         </button>
       </div>
     );
+  }
+
+  // ── Loading state ──────────────────────────────────────────────────────────
+  if (status !== 'COMPLETED') {
+    return <ScanLoading onCancel={() => navigate('/')} />;
   }
 
   if (!report) return null;

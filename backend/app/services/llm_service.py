@@ -7,6 +7,7 @@ import random
 logger = logging.getLogger(__name__)
 
 MOCK_MODE = os.getenv("MOCK_API_CALLS", "false").lower() == "true" or os.getenv("TEST_MODE", "false").lower() == "true"
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 api_key = os.getenv("ANTHROPIC_API_KEY")
 client = AsyncAnthropic(api_key=api_key) if api_key else None
 
@@ -132,9 +133,9 @@ Analyze the provided data and return a structured JSON object with three keys: f
 - wikipedia: Company Wikipedia summary
 - whois / ssl / microlink: Domain intelligence
 - google_places: Physical address / business status
-- sandbox_tsp: India-specific — GSTIN / PAN / MSMED live verification
-- sandbox_intel: Entities extracted from Sandbox — alternate trade names, registered address, business type, industry
-- sandbox_enrichment.by_alternate_name[NAME]: For each alternate name found in GSTIN/PAN/MSMED, results from serper + gdelt + sanctions
+- sandbox_tsp: India-specific — GSTIN / PAN / MSMED live verification (AuthBridge)
+- sandbox_intel: Entities extracted from verification — alternate trade names, registered address, business type, industry
+- sandbox_enrichment.by_alternate_name[NAME]: For each alternate/registered name recovered from GSTIN/PAN/MSMED, the FULL search graph re-run under that real name — serper_results (adverse), reviews_results, profile_results, news_results, newsapi_results (adverse media), regulatory_results (regulatory/penalty news), gdelt_results, sanctions_results, wikipedia, opencorporates. Treat adverse hits here as HIGH signal: they attach to the company's actual registered identity, not just the submitted name.
 - sandbox_enrichment.gstin_address_places: Google Places result using the GSTIN-verified registered address
 {news_index_block}
 
@@ -237,7 +238,7 @@ If no news articles were provided, set "news_article_analysis" to []."""
         logger.info("Calling Claude for findings + section analysis + article analysis...")
 
         message = await client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model=CLAUDE_MODEL,
             max_tokens=5000,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -278,5 +279,5 @@ If no news articles were provided, set "news_article_analysis" to []."""
         logger.error(f"Failed to parse Claude response as JSON: {e}")
         return [], 0, {}, []
     except Exception as e:
-        logger.error(f"Claude API error: {e}")
-        return [], 0, {}, []
+        logger.error(f"Claude API error: {type(e).__name__}: {e}")
+        raise RuntimeError(f"LLM call failed: {type(e).__name__}: {e}") from e

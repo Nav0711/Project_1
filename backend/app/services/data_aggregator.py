@@ -34,16 +34,21 @@ async def _gather_gdelt(legal_name, founder_ceo_name, director_names=None):
     return news_results
 
 async def _gather_sandbox(jurisdiction_country, tax_identifier, pan_number, msmed_certificate_number):
-    if jurisdiction_country and jurisdiction_country.upper() == "IN":
-        tsp_results = {}
-        if tax_identifier:
-            tsp_results["gstin"] = await sandbox_api.verify_gstin(tax_identifier)
-        if pan_number:
-            tsp_results["pan"] = await sandbox_api.verify_pan(pan_number)
-        if msmed_certificate_number:
-            tsp_results["msmed"] = await sandbox_api.verify_msmed(msmed_certificate_number)
-        return tsp_results
-    return {}
+    # Run if jurisdiction is India OR if any Indian identifier was provided
+    # (PAN/GSTIN/MSMED are India-only by definition — don't skip just because jurisdiction wasn't set)
+    is_india = (jurisdiction_country and jurisdiction_country.upper() in ("IN", "IND", "INDIA"))
+    has_indian_id = any([tax_identifier, pan_number, msmed_certificate_number])
+    if not (is_india or has_indian_id):
+        return {}
+
+    tsp_results = {}
+    if tax_identifier:
+        tsp_results["gstin"] = await sandbox_api.verify_gstin(tax_identifier)
+    if pan_number:
+        tsp_results["pan"] = await sandbox_api.verify_pan(pan_number)
+    if msmed_certificate_number:
+        tsp_results["msmed"] = await sandbox_api.verify_msmed(msmed_certificate_number)
+    return tsp_results
 
 async def _async_return(val):
     return val
@@ -124,24 +129,38 @@ def _extract_sandbox_intel(sandbox_results: dict, legal_name: str) -> dict:
 async def _enrich_from_sandbox_intel(intel: dict, legal_name: str) -> dict:
     """
     Phase 2 enrichment: for every alternate name found in GSTIN/PAN/MSMED,
-    run Serper, GDELT, and OpenSanctions searches.
-    Also run a more precise Google Places lookup using the GSTIN registered address.
+    re-run the full text-search graph (Serper adverse/reviews/profile/news,
+    NewsAPI adverse + regulatory, GDELT, OpenSanctions, Wikipedia, OpenCorporates)
+    so the whole intelligence picture is searched under the company's real
+    registered names — not just the name typed into the form.
+    Also run a precise Google Places lookup using the GSTIN registered address.
     """
     tasks = []
+    names = intel.get("additional_names", [])
 
-    for name in intel.get("additional_names", []):
-        tasks.append(_safe_call(
-            f"enrich_serper_{name}",
-            serper_api.search(f'"{name}" fraud scam complaints news reviews')
-        ))
-        tasks.append(_safe_call(
-            f"enrich_gdelt_{name}",
-            gdelt.search_news(name)
-        ))
-        tasks.append(_safe_call(
-            f"enrich_sanctions_{name}",
-            opensanctions.search_entity(name)
-        ))
+    # The full per-name search set (mirrors the Phase-1 queries).
+    # (task_key, coroutine factory) — index-keyed below to avoid name collisions.
+    def _name_tasks(name: str) -> dict:
+        return {
+            "serper_adverse":     serper_api.search(f'"{name}" fraud scam complaints reviews'),
+            "serper_reviews":     serper_api.search(
+                f'"{name}" reviews rating site:trustpilot.com OR site:glassdoor.com OR site:g2.com OR site:ambitionbox.com'
+            ),
+            "serper_profile":     serper_api.search(f'"{name}" company founded headquarters employees overview'),
+            "serper_news":        serper_api.search(f'"{name}" latest news announcement update'),
+            "newsapi_adverse":    news_api.search_news(f"{name} AND (fraud OR scandal OR lawsuit)"),
+            "newsapi_regulatory": news_api.search_news(
+                f"{name} AND (penalty OR fine OR SEBI OR SEC OR regulatory OR compliance)"
+            ),
+            "gdelt":              gdelt.search_news(name),
+            "sanctions":          opensanctions.search_entity(name),
+            "wikipedia":          wikipedia_api.get_summary(name),
+            "opencorporates":     opencorp.search_company(name, jurisdiction="in"),
+        }
+
+    for i, name in enumerate(names):
+        for task_key, coro in _name_tasks(name).items():
+            tasks.append(_safe_call(f"enrich_{i}_{task_key}", coro))
 
     # Use the verified GSTIN address for a precise physical presence check
     addr = intel.get("registered_address")
@@ -162,11 +181,18 @@ async def _enrich_from_sandbox_intel(intel: dict, legal_name: str) -> dict:
         "by_alternate_name": {},
         "gstin_address_places": raw.get("enrich_places_gstin")
     }
-    for name in intel.get("additional_names", []):
+    for i, name in enumerate(names):
         enrichment["by_alternate_name"][name] = {
-            "serper": raw.get(f"enrich_serper_{name}"),
-            "gdelt": raw.get(f"enrich_gdelt_{name}"),
-            "sanctions": raw.get(f"enrich_sanctions_{name}")
+            "serper_adverse":     raw.get(f"enrich_{i}_serper_adverse"),
+            "serper_reviews":     raw.get(f"enrich_{i}_serper_reviews"),
+            "serper_profile":     raw.get(f"enrich_{i}_serper_profile"),
+            "serper_news":        raw.get(f"enrich_{i}_serper_news"),
+            "newsapi_adverse":    raw.get(f"enrich_{i}_newsapi_adverse"),
+            "newsapi_regulatory": raw.get(f"enrich_{i}_newsapi_regulatory"),
+            "gdelt":              raw.get(f"enrich_{i}_gdelt"),
+            "sanctions":          raw.get(f"enrich_{i}_sanctions"),
+            "wikipedia":          raw.get(f"enrich_{i}_wikipedia"),
+            "opencorporates":     raw.get(f"enrich_{i}_opencorporates"),
         }
 
     return enrichment

@@ -192,6 +192,8 @@ def _build_news_flat_list(aggregated_data: dict) -> list:
     return flat
 
 
+SCAN_TIMEOUT_SECONDS = 300  # 5 minutes max per scan
+
 async def run_scan_workflow(scan_id: str, input_id: str, scan_type: str):
     db = next(get_db())
     try:
@@ -199,28 +201,34 @@ async def run_scan_workflow(scan_id: str, input_id: str, scan_type: str):
         if not vendor:
             return
 
-        # Fetch Data
-        aggregated_data = await aggregate_vendor_data(
-            legal_name=vendor.legal_name,
-            website_domain=vendor.website_domain,
-            registration_number=vendor.registration_number,
-            jurisdiction_country=vendor.jurisdiction_country,
-            director_names=vendor.director_names or [],
-            director_din=vendor.director_din or [],
-            founder_ceo_name=vendor.founder_ceo_name,
-            tax_identifier=vendor.tax_identifier,
-            pan_number=vendor.pan_number,
-            msmed_certificate_number=vendor.msmed_certificate_number,
-            city=vendor.city,
-            registered_address=vendor.registered_address,
-            social_handles=vendor.social_handles or {}
+        # Fetch Data (timeout after 4 minutes to leave room for LLM call)
+        aggregated_data = await asyncio.wait_for(
+            aggregate_vendor_data(
+                legal_name=vendor.legal_name,
+                website_domain=vendor.website_domain,
+                registration_number=vendor.registration_number,
+                jurisdiction_country=vendor.jurisdiction_country,
+                director_names=vendor.director_names or [],
+                director_din=vendor.director_din or [],
+                founder_ceo_name=vendor.founder_ceo_name,
+                tax_identifier=vendor.tax_identifier,
+                pan_number=vendor.pan_number,
+                msmed_certificate_number=vendor.msmed_certificate_number,
+                city=vendor.city,
+                registered_address=vendor.registered_address,
+                social_handles=vendor.social_handles or {}
+            ),
+            timeout=240
         )
 
         # Simulate delay to match "processing time" expectations
         await asyncio.sleep(3)
 
         news_flat_list = _build_news_flat_list(aggregated_data)
-        findings, tokens_used, section_analysis, article_analysis = await extract_findings_from_data(aggregated_data, news_flat_list)
+        findings, tokens_used, section_analysis, article_analysis = await asyncio.wait_for(
+            extract_findings_from_data(aggregated_data, news_flat_list),
+            timeout=60
+        )
 
         # PRD Scoring logic simulation
         critical_count = sum(1 for f in findings if f['severity'] == 'critical')
@@ -341,13 +349,19 @@ async def run_scan_workflow(scan_id: str, input_id: str, scan_type: str):
 
         # 8. Sandbox TSP
         sandbox_data = aggregated_data.get("sandbox_tsp", {})
-        if sandbox_data:
+        has_indian_id = any([vendor.tax_identifier, vendor.pan_number, vendor.msmed_certificate_number])
+        if sandbox_data and isinstance(sandbox_data, dict) and not sandbox_data.get("error"):
+            # Real verification data returned
             sources_summary["sandbox_tsp"] = sandbox_data
-        else:
+        elif has_indian_id:
+            # Indian IDs were provided but verification failed or was skipped — show honest status
             sources_summary["sandbox_tsp"] = {
-                "gstin": {"valid": True, "status": "Active"} if vendor.tax_identifier else {"status": "Not Checked"},
-                "pan": {"valid": True, "status": "Active"} if vendor.pan_number else {"status": "Not Checked"}
+                "gstin": {"status": "Not Verified", "note": "Live check unavailable"} if vendor.tax_identifier else {"status": "Not Provided"},
+                "pan":   {"status": "Not Verified", "note": "Live check unavailable"} if vendor.pan_number else {"status": "Not Provided"},
+                "msmed": {"status": "Not Verified", "note": "Live check unavailable"} if vendor.msmed_certificate_number else {"status": "Not Provided"},
             }
+        else:
+            sources_summary["sandbox_tsp"] = {"status": "Not Applicable", "note": "No Indian identifiers provided"}
 
         # 9. Google Places
         places_data = aggregated_data.get("google_places", {})
@@ -418,19 +432,29 @@ async def run_scan_workflow(scan_id: str, input_id: str, scan_type: str):
         if sandbox_intel:
             sources_summary["sandbox_intel"] = sandbox_intel
 
-        # 17. Sandbox Enrichment — searches run for each alternate name found
+        # 17. Sandbox Enrichment — full search graph re-run for each alternate name found
         sandbox_enrichment = aggregated_data.get("sandbox_enrichment")
         if sandbox_enrichment:
+            def _organic(r):  return (r or {}).get("organic", [])
+            def _articles(r): return (r or {}).get("articles", [])
+            def _results(r):  return (r or {}).get("results", [])
+            def _companies(r): return (r or {}).get("companies", [])
+
             # Flatten the by_alternate_name results for the report
             enrichment_summary = {}
             for name, results in (sandbox_enrichment.get("by_alternate_name") or {}).items():
-                serper_hits = (results.get("serper") or {}).get("organic", [])
-                gdelt_hits = (results.get("gdelt") or {}).get("results", [])
-                sanctions_hits = (results.get("sanctions") or {}).get("results", [])
                 enrichment_summary[name] = {
-                    "serper_results": serper_hits,
-                    "gdelt_results": gdelt_hits,
-                    "sanctions_results": sanctions_hits
+                    # Adverse Serper kept under the legacy key for backward compatibility
+                    "serper_results":     _organic(results.get("serper_adverse")),
+                    "reviews_results":    _organic(results.get("serper_reviews")),
+                    "profile_results":    _organic(results.get("serper_profile")),
+                    "news_results":       _organic(results.get("serper_news")),
+                    "newsapi_results":    _articles(results.get("newsapi_adverse")),
+                    "regulatory_results": _articles(results.get("newsapi_regulatory")),
+                    "gdelt_results":      _results(results.get("gdelt")),
+                    "sanctions_results":  _results(results.get("sanctions")),
+                    "wikipedia":          results.get("wikipedia") or {},
+                    "opencorporates":     _companies(results.get("opencorporates")),
                 }
             gstin_places = sandbox_enrichment.get("gstin_address_places")
             sources_summary["sandbox_enrichment"] = {
@@ -485,10 +509,11 @@ async def run_scan_workflow(scan_id: str, input_id: str, scan_type: str):
         db.commit()
 
     except Exception as e:
-        print(f"Scan failed: {e}")
+        print(f"Scan failed: {type(e).__name__}: {e}")
         scan = db.query(KybScan).filter(KybScan.scan_id == scan_id).first()
         if scan:
             scan.status = 'ERROR'
+            scan.raw_data_summary = {"error": str(e)}
             db.commit()
 
 @app.post("/scan")

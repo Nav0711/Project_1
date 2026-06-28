@@ -5,8 +5,8 @@ from dotenv import load_dotenv
 import os
 from pathlib import Path
 
-# Load .env from the script's directory
-env_path = Path(__file__).parent / ".env"
+# Load .env from the backend/ root (3 levels up from app/core/)
+env_path = Path(__file__).resolve().parent.parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 DATABASE_URL = os.getenv("DATABASE_URL")

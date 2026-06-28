@@ -1,11 +1,18 @@
 # Product Requirements Document (PRD)
 ## VendorLens — Automated KYB & Vendor Due Diligence Platform
-**Version:** 3.0
-**Status:** Engineering-Ready Draft
+**Version:** 3.1 — As-Built Reconciliation
+**Status:** Reconciled against the implemented prototype
 **Classification:** Internal — Confidential
 **Last Updated:** June 2026
 
-> **v3.0 changelog (this revision):** VendorLens is converted from a hosted web application to a **Windows desktop application** for internal procurement users on corporate laptops. All web-hosting, browser-client, and server-deployment requirements are replaced with local installation, local data storage, offline-capable workflows, and an auto-update mechanism. Vendor risk analysis functionality (API integrations, enrichment, risk scoring, document management, reporting) is unchanged. New: SAP vendor master data import (Excel/CSV). Sections changed from v2.0 are marked **[MODIFIED v3.0]**; unchanged sections are marked **[UNCHANGED]**.
+> **v3.1 changelog (this revision):** This revision reconciles the v3.0 vision document against **what has actually been built** in the current prototype. The v3.0 text described an aspirational Windows-desktop product with offline queueing, SAP import, on-device OCR, dual-depth (Quick/Deep) scanning, and a broad multi-registry API set. The shipped prototype is narrower and, in the India path, deeper. Each section now carries an **implementation-status marker** (legend below), factual details (API set, LLM model, scan depth, schema, tech stack) are corrected to match the code, and features that exist in code but were absent from v3.0 (the **token-budget system**, the **India identity-verification path**, and the **AI Insights** layer) are documented. **The India identity-verification provider is AuthBridge** (replacing the previously-used Sandbox TSP); all India GSTIN/PAN/MSME verification references reflect AuthBridge.
+
+> **Implementation-status legend (used throughout):**
+> - **✅ IMPLEMENTED** — present and working in the current prototype.
+> - **🟡 PARTIAL** — partially built or built differently than the v3.0 text describes.
+> - **🔮 PLANNED** — described in the v3.0 vision but **not built**; retained as roadmap.
+>
+> Older `[MODIFIED v3.0]` / `[UNCHANGED]` / `[NEW v3.0]` tags are left in place for historical traceability against v2.0, but the status markers above are authoritative for "is it built today."
 
 ---
 
@@ -27,6 +34,41 @@
 
 ---
 
+## 0. Implementation Status at a Glance **[NEW v3.1]**
+
+A quick map of v3.0 vision vs. the current prototype. Details and rationale are in each section.
+
+| Capability | Status | Notes |
+|---|---|---|
+| Manual intake form | ✅ IMPLEMENTED | Single page, `legal_name` required; India fields (PAN, GSTIN, MSME no., city, mobile) included |
+| Excel intake upload | ✅ IMPLEMENTED | `/vendor/parse-excel` + `/vendor/intake`; flexible/fuzzy column mapping; multi-row parse with a vendor picker |
+| Deep Diligence scan | ✅ IMPLEMENTED | The only scan depth in the product |
+| **Quick Scan** | 🔮 PLANNED | Removed from the UI; only Deep Diligence ships. Cost ladder/dual-depth text is roadmap |
+| Corporate registry (OpenCorporates) | ✅ IMPLEMENTED | Search only; GLEIF/Companies House not built |
+| Sanctions/PEP (OpenSanctions) | ✅ IMPLEMENTED | yente `/search/default`; OFAC-XML/UN-direct not built |
+| Adverse media | ✅ IMPLEMENTED | GDELT + NewsAPI (adverse + regulatory) + Serper news; Google CSE not used |
+| Web / reviews / profile (Serper) | ✅ IMPLEMENTED | 4 Serper queries: adverse, reviews, company profile, latest news |
+| Domain intelligence | ✅ IMPLEMENTED | WHOIS via local `python-whois`; SSL via Python `ssl`; Microlink metadata. (WhoisXML/SSL Labs/VirusTotal not used) |
+| Wikipedia summary | ✅ IMPLEMENTED | Free REST API |
+| Address / physical presence | 🟡 PARTIAL | Google Places text search (no Geocoding/Street-View shell-cluster logic) |
+| **India identity verification** | ✅ IMPLEMENTED | GSTIN / PAN / MSME via **AuthBridge** (replaces Sandbox TSP); drives a two-phase alternate-name enrichment loop |
+| AI Insights (per-section + per-article scores) | ✅ IMPLEMENTED | Single LLM call returns `findings` + `section_analysis` + `news_article_analysis` |
+| Token-budget system | ✅ IMPLEMENTED | Local `token_manager` (50k cap, deduct-per-scan, replenish script); not in v3.0 text |
+| Director/UBO/beneficial-ownership screening | 🔮 PLANNED | OpenOwnership/UK PSC/MCA DIN not built; directors are searched via media/sanctions only |
+| Deterministic rule engine / anomaly detector | 🔮 PLANNED | `anomaly_detector.py` not built |
+| Entity resolver (fuzzy name canonicalization) | 🔮 PLANNED | `entity_resolver.py` not built |
+| Weighted risk calculator | 🟡 PARTIAL | Shipped scoring is a simple severity-presence ladder in `run_scan_workflow`; `risk_scorer.py` exists but is **unused** |
+| Excel / PDF export | 🔮 PLANNED | Report endpoint returns JSON only |
+| SAP vendor master import | 🔮 PLANNED | No `/vendor/import-sap`, no `sap_parser.py` |
+| On-device OCR (Tesseract) | 🔮 PLANNED | No OCR pipeline |
+| Offline queue / connectivity monitor | 🔮 PLANNED | No `scan_queue`, no APScheduler; scans run via FastAPI `BackgroundTasks` |
+| Local response cache (`api_response_cache`) | 🔮 PLANNED | Not built |
+| Auto-update (Squirrel) / Sentry telemetry | 🔮 PLANNED | Not built |
+| Electron desktop shell | 🟡 PARTIAL | Electron wrapper present; full installer/auto-update/MSI packaging not set up |
+| Local DB | ✅ IMPLEMENTED | SQLite via SQLAlchemy (`test.db`); `DATABASE_URL` can point at PostgreSQL |
+
+---
+
 ## 1. Executive Summary & Product Vision **[MODIFIED v3.0]**
 
 ### 1.1 The Problem **[UNCHANGED]**
@@ -39,7 +81,9 @@ The result: either vendors slip through without adequate screening, or the scree
 
 ### 1.2 The Solution **[MODIFIED v3.0]**
 
-**VendorLens** is a **Windows desktop application**, installed locally on each procurement team member's corporate laptop, that replaces fragile scrapers with a structured, API-first intelligence pipeline. It aggregates public data from authoritative sources — corporate registries, sanctions lists, WHOIS databases, global news indices, and court records — then uses a Large Language Model as a due diligence analyst to synthesize the raw data into a structured, actionable risk report. All vendor data, scan history, and findings are stored **locally on the user's machine**, with API enrichment occurring whenever the laptop has internet access.
+**VendorLens** replaces fragile scrapers with a structured, API-first intelligence pipeline. It aggregates public and licensed data from authoritative sources — a corporate registry (OpenCorporates), sanctions/PEP screening (OpenSanctions), domain intelligence (WHOIS + SSL + Microlink), global and web news (GDELT, NewsAPI, Serper), customer/employee reviews and company-profile search (Serper), Wikipedia, physical-presence search (Google Places), and — for Indian vendors — GSTIN/PAN/MSME identity verification via **AuthBridge** — then uses a Large Language Model as a due diligence analyst to synthesize the raw data into a structured, actionable risk report with per-section relevance/criticality scoring. Vendor data, scan history, and adverse findings are stored locally (SQLite by default).
+
+> **🟡 Status note (v3.1):** The shipped prototype runs as a local FastAPI service + React UI (with an Electron wrapper present). The "installed Windows desktop application" framing below — signed installer, offline operation, auto-update — is **🔮 PLANNED** (Sections 10–11), not yet built. The data-synthesis pipeline and the source list above are **✅ IMPLEMENTED**.
 
 The platform is purpose-built for **Know Your Business (KYB)** and **Third-Party Risk Management (TPRM)** workflows, meaning it screens not just the legal entity but the entire control structure behind it: directors, ultimate beneficial owners (UBOs), and related entities.
 
@@ -77,7 +121,9 @@ VendorLens v3.0 is built for **procurement team members working on corporate-iss
 
 ### 2.2 Single-Pass Intake, Then User-Selected Scan Depth **[MODIFIED v3.0]**
 
-The application UI does not gate input behind two tiers. Instead, the workflow splits into two independent steps performed locally on the desktop app: **Step A — Intake** (done once per vendor, by hand, Excel upload, or SAP export, covering every field the platform can use) and **Step B — Scan Depth** (a choice the user makes every time they want a report, reusing the same locally saved intake). This removes re-entry entirely: a vendor can be Quick-Scanned today and Deep-Diligenced next week — even on a different day with different connectivity — without typing anything twice.
+> **🟡 Status note (v3.1):** The product ships with a **single scan depth — Deep Diligence**. The Quick Scan tier and the user-facing depth selector were **removed** from the UI; the `ScanSelector` screen now launches Deep Diligence directly. The dual-depth model, the offline-queue behavior, and the SAP-export intake path described in this section are **🔮 PLANNED** roadmap. **✅ Implemented today:** single-pass intake (manual form or Excel upload) → saved `input_id` → on-demand Deep Diligence on that saved record, re-runnable any number of times.
+
+The application UI does not gate input behind two tiers. Instead, the workflow splits into two independent steps: **Step A — Intake** (done once per vendor, by hand or Excel upload, covering every field the platform can use) and **Step B — Scan** (launched on demand against the same saved intake). This removes re-entry entirely: a vendor's saved `input_id` is reused by every scan without typing anything twice. *(v3.0 vision: a Quick vs. Deep choice at Step B — see status note above.)*
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
@@ -121,6 +167,8 @@ The application UI does not gate input behind two tiers. Instead, the workflow s
 ```
 
 #### Scan Depth Comparison (the choice the user makes in Step B) **[UNCHANGED logic, connectivity note added]**
+
+> **🔮 Status note (v3.1):** This comparison is **roadmap** — Quick Scan is not built. Today every scan is a Deep Diligence run, executed online via FastAPI `BackgroundTasks` (no offline queue), and gated by the local **token budget** (15,000 tokens per deep scan; see the new Token-Budget section under §8). The actual Deep Diligence API set differs from the "APIs triggered" column below — see the corrected §5.
 
 | | Quick Scan | Deep Diligence |
 |---|---|---|
@@ -193,7 +241,9 @@ The application UI does not gate input behind two tiers. Instead, the workflow s
 
 ### 3.1 Input Categories & Data Dictionary **[UNCHANGED]**
 
-All four categories below are presented in **one** intake step (Section 2.2, Step A) — as a manual form, an Excel upload, or a SAP export import (Section 3.7). Category 1 is mandatory to save an intake at all; Categories 2–4 are optional at intake time but determine how much of the pipeline a later **Deep Diligence** run can actually execute (see 3.5).
+> **🟡 Status note (v3.1):** Intake ships via **manual form** and **Excel upload** only (SAP import is 🔮 PLANNED — §3.7). The implemented `VendorInput` record adds several **India-specific fields not in the v3.0 dictionary**: `pan_number`, `msmed_certificate_number` (Udyam/MSME), `city`, and `mobile_number`. Only `legal_name` is enforced as required at intake in the current code (the v3.0 "domain also required" rule is not enforced). The `API Triggered` columns below list the v3.0 vision; the **actual** APIs each field drives are in the corrected §5 and §3.6.
+
+All categories below are presented in **one** intake step (Section 2.2, Step A) — as a manual form or an Excel upload (SAP export import, §3.7, is planned). Category 1 is mandatory to save an intake at all; Categories 2–4 are optional at intake time but determine how much of the pipeline a later **Deep Diligence** run can actually execute (see 3.5).
 
 #### Category 1 — Primary Identifiers (Required at intake; used by both Quick Scan and Deep Diligence)
 
@@ -206,10 +256,14 @@ All four categories below are presented in **one** intake step (Section 2.2, Ste
 
 | Field | Format | Examples | API Triggered |
 |---|---|---|---|
-| `registration_number` | Alphanumeric | CIN (IN), EIN (US), CRN (UK), HRB (DE) | OpenCorporates `/companies/search`, MCA, Companies House |
-| `jurisdiction_country` | ISO 3166-1 alpha-2 | `IN`, `US`, `GB`, `AE` | Determines which registry API to call |
-| `tax_identifier` | Alphanumeric | GSTIN, PAN, VAT, TIN | Country-specific: GST API (IN), VIES (EU) |
-| `registered_address` | Full address string | "123 Trade Tower, Mumbai 400001" | Google Geocoding API + Places API (shell company cluster detection) |
+| `registration_number` | Alphanumeric | CIN (IN), EIN (US), CRN (UK), HRB (DE) | OpenCorporates `/companies/search` (✅). MCA/Companies House 🔮 |
+| `jurisdiction_country` | ISO 3166-1 alpha-2 | `IN`, `US`, `GB`, `AE` | Sets OpenCorporates jurisdiction; `IN` (or any India ID present) triggers the AuthBridge path |
+| `tax_identifier` | Alphanumeric | GSTIN (used as the GST number) | **AuthBridge GSTIN verify** (✅, India). VIES (EU) 🔮 |
+| `pan_number` *(v3.1, India)* | 10-char PAN | `AAAAA0000A` | **AuthBridge PAN verify** (✅) |
+| `msmed_certificate_number` *(v3.1, India)* | Udyam/MSME no. | `UDYAM-XX-00-0000000` | **AuthBridge MSME/Udyam verify** (✅) |
+| `registered_address` | Full address string | "123 Trade Tower, Mumbai 400001" | Google **Places** text search (✅, partial). Geocoding + shell-cluster detection 🔮 |
+| `city` *(v3.1)* | String | "Mumbai" | Sharpens the Google Places query |
+| `mobile_number` *(v3.1)* | String | — | Stored at intake; no live verification wired yet |
 
 #### Category 3 — Key Personnel & Leadership (Optional at intake; used only when the user selects Deep Diligence)
 
@@ -225,7 +279,7 @@ All four categories below are presented in **one** intake step (Section 2.2, Ste
 |---|---|---|---|
 | `social_handles` | Object `{platform: handle}` | LinkedIn, Twitter/X, Facebook | Platform public APIs or SERP API scrape |
 | `corporate_email_domain` | String | `@acmesolutions.com` | MX record check; flag if `@gmail.com` / `@outlook.com` |
-| `ocr_documents` | File array (PDF/JPG/PNG) | GST cert, invoice, trade license — **not** part of the Excel/SAP templates (binary files can't live in spreadsheet cells); always a separate, optional upload control alongside any intake path | Local Tesseract OCR pipeline (runs on-device, no internet required) |
+| `ocr_documents` 🔮 | File array (PDF/JPG/PNG) | GST cert, invoice, trade license | **🔮 PLANNED** — the local Tesseract OCR pipeline is not built; no document-attachment control exists in the current intake UI |
 
 ### 3.2 Unified Intake — Manual Form **[UNCHANGED]**
 
@@ -313,29 +367,38 @@ Because intake is decoupled from scan depth, a user can request Deep Diligence o
 - If some but not all Category 2–4 fields are present, only the corresponding tasks fire (e.g., directors were given but no address → director screening runs, address verification is skipped and noted).
 - The application surfaces this as a banner: *"This report is based on partial data. Add registration number, address, or directors to your saved intake for a fuller Deep Diligence."* — with a link back to the same saved `input_id` so the user edits the existing local record rather than starting over.
 
-### 3.6 Field-to-API Mapping Matrix **[UNCHANGED]**
+### 3.6 Field-to-API Mapping Matrix **[MODIFIED v3.1 — corrected to as-built]**
+
+Actual mapping in the implemented pipeline (`data_aggregator.py` / `endpoints.py`):
 
 ```
-INPUT FIELD              │ PRIMARY API           │ FALLBACK            │ RISK SIGNAL
-─────────────────────────┼───────────────────────┼─────────────────────┼──────────────────────
-legal_name               │ OpenCorporates        │ GLEIF               │ Not found = unverified
-legal_name               │ OpenSanctions         │ OFAC XML            │ Match = CRITICAL
-legal_name               │ GDELT + NewsAPI       │ Google CSE          │ Negative tone articles
-website_domain           │ WHOIS API             │ —                   │ Age < claimed = RED FLAG
-website_domain           │ SSL Labs API          │ —                   │ No SSL / expired = MEDIUM
-registration_number      │ OpenCorporates direct │ Country registry    │ Dissolved = HIGH
-tax_identifier           │ GST/VAT verify API    │ —                   │ Inactive = HIGH
-registered_address       │ Google Geocoding      │ —                   │ Known shell address = HIGH
-director_names           │ OpenSanctions PEP     │ Wikidata SPARQL     │ PEP status = REVIEW
-director_names           │ GDELT + Google CSE    │ NewsAPI             │ Adverse media = HIGH
-director_din             │ MCA API (India)       │ —                   │ Linked to defaulted cos
-social_handles           │ Platform APIs / SERP  │ —                   │ Bot inflation, complaints
-corporate_email_domain   │ MX lookup (DNS)       │ —                   │ Free email = MEDIUM flag
+INPUT FIELD              │ API(S) ACTUALLY CALLED                    │ RISK SIGNAL
+─────────────────────────┼───────────────────────────────────────────┼──────────────────────
+legal_name               │ OpenCorporates (search)                   │ Dissolved/struck-off = HIGH
+legal_name               │ OpenSanctions (yente /search/default)     │ Match = CRITICAL
+legal_name               │ GDELT + NewsAPI(×2) + Serper(news)        │ Adverse coverage
+legal_name               │ Serper: adverse / reviews / profile       │ Fraud, complaints, low ratings
+legal_name               │ Wikipedia (REST summary)                  │ Defunct / known fraud
+website_domain           │ python-whois (local)                      │ Recent reg vs. claimed age
+website_domain           │ Python ssl module (local)                 │ No SSL / expired = MEDIUM
+website_domain           │ Microlink (metadata)                      │ Unreachable / thin site
+registration_number      │ OpenCorporates                            │ Dissolved = HIGH
+tax_identifier (GSTIN)   │ AuthBridge GSTIN verify (India)           │ Cancelled/Suspended = HIGH
+pan_number               │ AuthBridge PAN verify (India)             │ Inactive / name mismatch
+msmed_certificate_number │ AuthBridge MSME/Udyam verify (India)      │ Invalid = MEDIUM
+registered_address/city  │ Google Places (text search)               │ Permanently closed = HIGH
+director_names           │ OpenSanctions + GDELT (per director)      │ Sanctions/PEP, adverse media
+founder_ceo_name         │ OpenSanctions + GDELT                     │ Sanctions/PEP, adverse media
+(AuthBridge alt. names)  │ re-fed into all of the above (Phase 2)    │ Risk under real trade names
 ```
+
+> Fields present at intake but **not yet wired to any live check:** `director_din` (no MCA DIN lookup), `social_handles`, `corporate_email_domain` (no MX/free-email check), `mobile_number`. These are stored but unused — 🔮 PLANNED.
 
 ### 3.7 SAP Vendor Master Import **[NEW v3.0]**
 
-Procurement teams typically maintain a vendor master record in SAP (e.g., via the MM-Purchasing or FI-Vendor module). VendorLens supports importing this data directly so analysts never retype information SAP already has.
+> **🔮 Status note (v3.1):** Entirely **PLANNED / not built**. There is no `/vendor/import-sap` endpoint and no `sap_parser.py`; `source_method` in the current code is `manual` or `excel` only, and there is no `sap_vendor_number` column. The Excel intake parser that *is* built (`/vendor/parse-excel`) already supports **multi-row files with a vendor picker** and flexible/fuzzy header matching, so it covers part of the bulk-intake intent. The rest of §3.7 below is retained as roadmap.
+
+Procurement teams typically maintain a vendor master record in SAP (e.g., via the MM-Purchasing or FI-Vendor module). VendorLens will support importing this data directly so analysts never retype information SAP already has.
 
 #### 3.7.1 Supported Export Formats
 
@@ -368,6 +431,11 @@ If a column cannot be confidently auto-mapped, the import wizard presents a side
 ---
 
 ## 4. System Architecture & Tech Stack **[MODIFIED v3.0]**
+
+> **🟡 Status note (v3.1) — what the diagram below gets right vs. the as-built system:**
+> - **✅ Built:** React + TypeScript UI (Electron wrapper present), a local **FastAPI** service, a two-phase data-aggregation layer calling the external APIs, **SQLite** persistence via SQLAlchemy, and the store-of-findings pattern.
+> - **🟡 Different:** background work runs via **FastAPI `BackgroundTasks`**, *not* APScheduler. There is **no** offline connectivity monitor, **no** `scan_queue`, **no** SAP parser, and **no** local OCR pipeline in the ingestion box. The service is dev-run with `uvicorn` (loopback), not yet packaged as a signed desktop installer.
+> - **➕ Missing from the diagram but built:** a local **token-budget manager** (`token_manager`, `token_state.json`) that gates each scan, and an **AI Insights** layer (per-section + per-article scoring) inside the LLM step.
 
 ### 4.1 High-Level Architecture **[MODIFIED v3.0]**
 
@@ -438,27 +506,35 @@ If a column cannot be confidently auto-mapped, the import wizard presents a side
 
 | Layer | Technology | Version | Rationale |
 |---|---|---|---|
-| Desktop Shell | Electron | 30.x | Packages the React UI + local Python service into a single installable Windows app |
-| Frontend | React + TypeScript | 18.x | Component-based, typed, strong ecosystem; reused from prior web UI with minimal change |
-| UI Components | shadcn/ui + Tailwind CSS | Latest | Rapid, consistent, accessible UI |
-| Local State/Data Fetching | TanStack Query | v5 | Polling scan/queue status against the local loopback service |
-| Local Application Service | FastAPI (Python 3.11+), bound to `127.0.0.1` only | 0.111+ | Async-first; same framework as before, now packaged for local execution instead of hosted deployment |
-| Local Task Scheduling | APScheduler (in-process) | Latest | Replaces Celery/Redis — no distributed broker needed for a single-user desktop install |
-| Connectivity Monitor | Custom Python service (network reachability poll) | — | Detects online/offline state; drives the offline scan queue |
-| Local Database | SQLite (default) | 3.45+ | Zero-config, file-based, ships embedded with the installer |
-| Local Database (optional) | PostgreSQL | 15.x | Optional for power users/teams who prefer a local Postgres instance; same schema as SQLite mode |
-| ORM | SQLAlchemy 2.0 + Alembic | Latest | ORM + migrations; supports both SQLite and PostgreSQL backends |
-| Spreadsheet/CSV Parsing | pandas + openpyxl | Latest | Parses the Excel intake template and SAP exports (.xlsx/.csv) into VendorInputRecords |
-| OCR | Tesseract 5 + pytesseract | Latest | Fully local OCR; no cloud OCR fallback, by design, for offline support |
-| HTTP Client | httpx | 0.27+ | Async HTTP for outbound API calls when online; respects corporate proxy settings |
-| LLM | Anthropic Claude API | claude-sonnet | Structured JSON output via tool use; the one component that always requires connectivity |
-| Local Caching | SQLite-backed response cache (TTL-based) | — | Caches recent API responses (e.g., sanctions list snapshots, geocoding results) to reduce repeat calls and support partial offline review |
-| Auto-Update | Squirrel.Windows (via electron-builder) | Latest | Background update checks and silent/staged rollout to installed laptops |
-| Packaging/Installer | electron-builder (NSIS installer, MSI variant for SCCM/Intune) | Latest | Produces a signed Windows installer for IT-managed deployment |
-| Local Logging | Python `logging` + rotating file handler | — | Local log files under `%LOCALAPPDATA%\VendorLens\logs\` for support/diagnostics |
-| Monitoring | Sentry (desktop SDK, crash/error reporting only) | Latest | Replaces Flower (no distributed workers to monitor); opt-in telemetry |
+| Desktop Shell | Electron | 🟡 present | Electron wrapper exists (`dist-electron/`); not yet packaged as a signed installer |
+| Frontend | React + TypeScript | ✅ **19.x** + Vite | Component-based, typed; v3.0 said React 18 — actual is React 19 on Vite |
+| UI Components | Tailwind CSS **4** + lucide-react | ✅ | Tailwind 4; shadcn/ui not used |
+| Local State/Data Fetching | `axios` + polling | 🟡 | Dashboard polls `/scan/{id}/status` directly with axios; TanStack Query not used |
+| Local Application Service | FastAPI (Python 3.11+), `uvicorn` on `127.0.0.1` | ✅ 0.111+ | Async-first; dev-run via uvicorn (not yet packaged) |
+| Background Work | **FastAPI `BackgroundTasks`** | ✅ | A scan is dispatched as a background task. APScheduler/Celery/Redis 🔮 not used |
+| Connectivity Monitor | — | 🔮 PLANNED | No online/offline detection or offline queue built |
+| Local Database | SQLite (default, `test.db`) | ✅ 3.45+ | Zero-config, file-based |
+| Local Database (optional) | PostgreSQL | 🟡 | `DATABASE_URL` + `psycopg2-binary` present, so Postgres works; not the default path |
+| ORM | SQLAlchemy 2.0 | ✅ | Tables auto-created via `Base.metadata.create_all`; **Alembic migrations 🔮 not set up** |
+| Spreadsheet Parsing | pandas + openpyxl | ✅ | Parses the Excel intake upload (multi-row, fuzzy headers). SAP/CSV path 🔮 |
+| OCR | Tesseract 5 + pytesseract | 🔮 PLANNED | No OCR pipeline built |
+| HTTP Client | httpx (async) | ✅ 0.27+ | Outbound API calls |
+| LLM | Anthropic Claude API | ✅ **`claude-sonnet-4-6`** | Configurable via `CLAUDE_MODEL` env; single synthesis call returns findings + section/article scores. `MOCK_MODE`/`TEST_MODE` bypasses it |
+| Token Budget | Local `token_manager` + `token_state.json` | ✅ **(new, not in v3.0)** | 50k cap, deduct-per-scan (15k/deep), `scripts/replenish_tokens.py` |
+| Local Caching | SQLite-backed TTL cache | 🔮 PLANNED | No `api_response_cache` built |
+| Auto-Update | Squirrel.Windows (electron-builder) | 🔮 PLANNED | Not built |
+| Packaging/Installer | electron-builder (NSIS/MSI) | 🔮 PLANNED | Not built |
+| Local Logging | Python `logging` | 🟡 | Standard logging in services; rotating-file handler under `%LOCALAPPDATA%` 🔮 |
+| Monitoring | Sentry | 🔮 PLANNED | Not built |
 
 ### 4.3 Backend 3-Step Core Workflow (Code Architecture) **[MODIFIED v3.0]**
+
+> **🟡 Status note (v3.1) — how the as-built backend differs from the illustrative code below:**
+> - **Endpoints actually implemented** (in `app/main.py`): `POST /vendor/parse-excel` (preview rows from an uploaded Excel), `POST /vendor/intake` (manual JSON *or* Excel file → one `VendorInput`), `POST /scan` (`{input_id, scan_type}` — only `deep` is used), `GET /scan/{id}/status`, `GET /scan/{id}/report`. **No** `/vendor/import-sap`.
+> - **No task-graph constants.** There is no `QUICK_SCAN_TASKS` / `DEEP_DILIGENCE_TASKS` list and no per-tool task objects. A scan calls a single `aggregate_vendor_data()` (which fans out all APIs in parallel via `asyncio.gather`, then runs the AuthBridge-driven Phase-2 enrichment) followed by one `extract_findings_from_data()` LLM call.
+> - **Token gate:** `/scan` first calls `token_manager.deduct(15000)` and returns **HTTP 402** if the local budget is exhausted — before any work is scheduled.
+> - **Offline branch (`is_online()`, `enqueue_offline_scan`) is 🔮 not built** — `/scan` always dispatches immediately via `BackgroundTasks`.
+> The code blocks below are the v3.0 design intent, retained for reference; treat the bullets above as authoritative.
 
 #### Step 1 — Data Ingestion (Local Intake Layer + Local Orchestration Layer)
 
@@ -629,6 +705,8 @@ def synthesize_findings_task(parallel_results: list, scan_id: str, scan_type: st
 
 #### Step 3 — Output & Reporting **[MODIFIED v3.0 — local file save + PDF export added]**
 
+> **🔮 Status note (v3.1):** **Export is not built.** `GET /scan/{id}/report` returns **JSON only** (no `format=excel|pdf`); there is no `excel_generator.py` or `pdf_generator.py`. The React dashboard renders the JSON report directly across five tabs (Overview, Findings, News & Media, Web & Reviews, India Verification). Excel colour-coding and one-click PDF below are 🔮 roadmap. Note also that the report **does** persist `sources_summary` and `section_analysis` inside `kyb_scans.raw_data_summary` — i.e., a curated data summary *is* stored, a deliberate deviation from the strict "metadata only" line in §8.
+
 ```python
 # app/reports/excel_generator.py
 import pandas as pd
@@ -674,20 +752,23 @@ def generate_pdf_report(scan_id: str, findings: list[dict], risk_summary: dict) 
 
 ---
 
-## 5. API Integration Specifications **[MODIFIED v3.0 — offline behavior added]**
+## 5. API Integration Specifications **[MODIFIED v3.1 — corrected to the as-built API set]**
 
-### 5.0 Offline / Online Behavior **[NEW v3.0]**
+> **🟡 Status note (v3.1) — what is actually integrated:** The implemented sources are **OpenCorporates, OpenSanctions, GDELT, NewsAPI (×2 queries: adverse + regulatory), Serper (×4 queries: adverse / reviews / company-profile / latest-news), local WHOIS (`python-whois`), local SSL (Python `ssl`), Microlink, Wikipedia, Google Places, and AuthBridge (India GSTIN/PAN/MSME)**. Each external client honours `MOCK_MODE`/`TEST_MODE` and returns mock payloads when set. The following v3.0 sources are **🔮 NOT integrated:** GLEIF, UK Companies House, OpenOwnership, UK PSC, VirusTotal, SSL Labs, Google Programmable Search (CSE), Google Geocoding, Wikidata SPARQL, MCA DIN, OFAC-XML/UN direct feeds. Subsections 5.1–5.6 below are annotated accordingly; the new AuthBridge spec is **§5.10**.
 
-All API integrations in this section require an active internet connection (typically via the corporate VPN or direct corporate network). VendorLens' local connectivity monitor checks reachability before dispatching any scan task:
+### 5.0 Offline / Online Behavior **[NEW v3.0]** — 🔮 PLANNED
+
+> **🔮 Status note (v3.1):** None of the offline behavior below is built. There is no connectivity monitor and no `scan_queue`; `/scan` always runs immediately online via `BackgroundTasks`. Completed scans and saved intakes are readable from the local DB at any time, but there is no offline-queue/reconnect/toast mechanism. Retained as roadmap:
 
 - **Online:** API calls dispatch immediately as described in 5.1–5.8.
 - **Offline:** the scan request is written to the local `scan_queue` table with status `QUEUED_OFFLINE`. No partial API calls are attempted. The desktop app shows a persistent "Offline — N scans queued" indicator in the UI.
 - **Reconnect:** the connectivity monitor detects restored access (default poll interval: 30 seconds) and automatically dispatches queued scans in FIFO order, with a Windows toast notification per completed scan.
 - **Cached read-only data:** previously completed scan results, saved vendor intakes, and exported reports remain fully accessible offline at all times, since they are stored in the local database.
 
-### 5.1 Entity Verification APIs **[UNCHANGED]**
+### 5.1 Entity Verification APIs **[MODIFIED v3.1]**
 
-#### OpenCorporates API
+#### OpenCorporates API — ✅ IMPLEMENTED (search only)
+> Implemented as `GET /v0.4/companies/search` (returns up to ~10 companies with name/number/jurisdiction/status/incorporation dates). The deeper `current_status`/shell-cluster risk logic below is advisory — the LLM applies it from the returned fields. **GLEIF (below) is 🔮 NOT integrated.**
 ```
 Endpoint:  GET https://api.opencorporates.com/v0.4/companies/search
 Params:    q={legal_name}&jurisdiction_code={ISO}&api_token={key}
@@ -700,7 +781,7 @@ Risk signals:
   - registered_address matches known shell cluster → HIGH
 ```
 
-#### GLEIF (Global LEI)
+#### GLEIF (Global LEI) — 🔮 PLANNED (not built)
 ```
 Endpoint:  GET https://api.gleif.org/api/v1/fuzzycompletions?field=fullLegalName&q={name}
            GET https://api.gleif.org/api/v1/lei-records/{lei}  (for ownership data)
@@ -711,12 +792,13 @@ Risk signals:
   - entityCategory = "BRANCH" → may be non-independent → flag for review
 ```
 
-### 5.2 Sanctions & Watchlist API **[UNCHANGED]**
+### 5.2 Sanctions & Watchlist API **[MODIFIED v3.1]**
 
-#### OpenSanctions (Primary Sanctions Source)
+#### OpenSanctions (Primary Sanctions Source) — ✅ IMPLEMENTED
+> **As-built:** the prototype uses the simpler **`GET /search/default`** full-text endpoint (params `q={name}&fuzzy=true&limit=10`, header `Authorization: ApiKey {key}`), called once per subject — the legal name **and every director/founder name**. The structured `/match/default` POST shown below (with explicit match scoring) is the v3.0 design; the implemented path relies on result ordering + the LLM to assess match strength. A 404 is handled gracefully as "no results". OFAC-XML/UN direct feeds are 🔮 not used.
 ```
-Endpoint:  GET https://api.opensanctions.org/match/default
-Method:    POST
+Endpoint:  GET https://api.opensanctions.org/search/default   (as-built)
+Design:    POST https://api.opensanctions.org/match/default   (v3.0 vision below)
 Body:      {"queries": {"q1": {"schema": "Company", "properties":
                                {"name": ["{legal_name}"]}}}}
 Headers:   Authorization: ApiKey {key}
@@ -733,11 +815,14 @@ Risk signals:
 
 > **Local caching note:** sanctions list snapshots used in the most recent successful scan for a given entity are cached locally (TTL: 24 hours) so the report remains viewable offline, but the cache is never used to satisfy a *new* scan request — a fresh online check is always required to mark a scan as current.
 
-### 5.3 Domain Intelligence APIs **[UNCHANGED]**
+### 5.3 Domain Intelligence APIs **[MODIFIED v3.1]**
 
-#### WHOIS API
+> **As-built:** Domain intel = **local `python-whois`** + **local Python `ssl` socket check** + **Microlink** metadata (free tier, no key). The paid **WhoisXML API** and **SSL Labs API** below are 🔮 NOT used — the implementation does the equivalent locally/free.
+
+#### WHOIS — ✅ IMPLEMENTED via local `python-whois` (paid WhoisXML API below is 🔮 not used)
 ```
-Endpoint:  GET https://www.whoisxmlapi.com/whoisserver/WhoisService
+As-built:  python-whois library (local lookup; no API key)
+Vision:    GET https://www.whoisxmlapi.com/whoisserver/WhoisService
 Params:    domainName={domain}&apiKey={key}&outputFormat=JSON
 Response:  {WhoisRecord: {createdDate, updatedDate, expiresDate,
                           registrantContact, administrativeContact,
@@ -749,18 +834,30 @@ Risk signals:
   - domainAvailability = "AVAILABLE" → domain doesn't exist → HIGH
 ```
 
-#### SSL Labs / Certificate Check
+#### SSL / Certificate Check — ✅ IMPLEMENTED via local Python `ssl` (SSL Labs API below 🔮 not used)
 ```
-Endpoint:  GET https://api.ssllabs.com/api/v3/analyze?host={domain}&all=done
+As-built:  Python ssl + socket — connects on :443, reads the peer cert,
+           returns issuer / not_before / not_after / is_expired / has_ssl
+Vision:    GET https://api.ssllabs.com/api/v3/analyze?host={domain}&all=done
 Risk signals:
-  - No HTTPS response → MEDIUM
+  - No HTTPS / connection fails → has_ssl=false → MEDIUM
   - Certificate expired → MEDIUM
-  - Grade F or T → HIGH (trust error / self-signed)
+  - (SSL Labs letter grade not available in the local check)
 ```
 
-### 5.4 Adverse Media APIs **[UNCHANGED]**
+#### Microlink — ✅ IMPLEMENTED (new in v3.1)
+```
+Endpoint:  GET https://api.microlink.io/?url={domain}
+Returns:   title, description, publisher, logo  (site reachability + metadata)
+Risk signals:
+  - Unreachable / empty metadata → thin or newly-stood-up site → MEDIUM
+```
 
-#### GDELT 2.0 (Free, No Key Required)
+### 5.4 Adverse Media & Web Search APIs **[MODIFIED v3.1]**
+
+> **As-built:** Adverse-media coverage = **GDELT** (free) + **NewsAPI** (two queries: an adverse query and a separate **regulatory** query: `penalty OR fine OR SEBI OR SEC OR regulatory OR compliance`) + **Serper** Google search run as **four** distinct queries — adverse (`fraud scam complaints reviews`), **reviews** (Trustpilot/Glassdoor/G2/AmbitionBox), **company profile** (founded/HQ/employees), and **latest news**. **Google Programmable Search (CSE) below is 🔮 NOT used — Serper replaces it.** Each result set is capped (~10 items) and, for Indian vendors, re-run for every AuthBridge alternate name in Phase 2 (§5.10).
+
+#### GDELT 2.0 (Free, No Key Required) — ✅ IMPLEMENTED
 ```
 Endpoint:  GET https://api.gdeltproject.org/api/v2/doc/doc
 Params:    query="{name}" (fraud OR corruption OR lawsuit OR arrested OR sanctioned)
@@ -773,7 +870,7 @@ Risk signals:
   - sourcecountry can flag jurisdiction-specific legal issues
 ```
 
-#### NewsAPI
+#### NewsAPI — ✅ IMPLEMENTED (run as 2 queries: adverse + regulatory)
 ```
 Endpoint:  GET https://newsapi.org/v2/everything
 Params:    q="{name}" AND (fraud OR scam OR arrested OR convicted OR lawsuit)
@@ -784,7 +881,20 @@ Risk signals:
   - source.id from tier-1 outlets (reuters, ap, bbc) → higher confidence
 ```
 
-#### Google Programmable Search Engine
+#### Serper (Google Search API) — ✅ IMPLEMENTED (replaces Google CSE)
+```
+Endpoint:  POST https://google.serper.dev/search   (header X-API-KEY)
+Queries run per vendor (each returns ~10 organic results):
+  1. adverse   : "{name} fraud scam complaints reviews"
+  2. reviews   : "{name}" reviews rating site:trustpilot.com OR glassdoor.com OR g2.com OR ambitionbox.com
+  3. profile   : "{name}" company founded headquarters employees overview
+  4. news      : "{name}" latest news announcement update
+Risk signals:
+  - Fraud/scam/complaint results dominating the adverse query → HIGH–CRITICAL
+  - Consistently low review ratings / non-payment complaints → MEDIUM–HIGH
+```
+
+#### Google Programmable Search Engine (CSE) — 🔮 PLANNED (not built; Serper used instead)
 ```
 Endpoint:  GET https://www.googleapis.com/customsearch/v1
 Params:    key={key}&cx={cx_id}&q="{name}" (site:courtlistener.com OR
@@ -795,9 +905,20 @@ Risk signals:
   - "v." pattern in title (Name v. Agency) → litigation finding
 ```
 
-### 5.5 Beneficial Ownership & Director APIs **[UNCHANGED]**
+#### Wikipedia (Free REST API) — ✅ IMPLEMENTED (new in v3.1)
+```
+Endpoint:  opensearch → /api/rest_v1/page/summary/{title}
+Returns:   title, description, extract (summary), page_url
+Risk signals:
+  - Entity described as defunct/dissolved or linked to fraud → HIGH
+  - No page found → neutral (absence is not adverse)
+```
 
-#### OpenOwnership (BODS Standard)
+### 5.5 Beneficial Ownership & Director APIs **[MODIFIED v3.1]** — 🔮 PLANNED
+
+> **🔮 Status note (v3.1):** Dedicated beneficial-ownership / officer APIs are **not built** — **OpenOwnership, UK Companies House, and MCA DIN are not integrated.** Directors and the founder/CEO that the user enters at intake *are* screened, but only through the **already-implemented** OpenSanctions + GDELT calls (run once per name in `_gather_sanctions` / `_gather_gdelt`). True UBO discovery, nominee-director detection, and circular-ownership analysis remain roadmap. The two specs below are retained as the target design.
+
+#### OpenOwnership (BODS Standard) — 🔮 PLANNED
 ```
 Endpoint:  GET https://register.openownership.org/entities?q={name}
 Response:  {results: [{identifier, name, type, relationships:
@@ -808,7 +929,7 @@ Risk signals:
   - Nominee director pattern (same director on 50+ companies) → HIGH
 ```
 
-#### UK Companies House (Free, Global Model)
+#### UK Companies House (Free, Global Model) — 🔮 PLANNED
 ```
 Endpoint:  GET https://api.company-information.service.gov.uk/search/companies?q={name}
            GET https://api.company-information.service.gov.uk/company/{number}/officers
@@ -819,15 +940,17 @@ Risk signals:
   - Filing date gaps > 2 years → compliance failure → MEDIUM
 ```
 
-### 5.6 Address Verification API (Shell Company Detection) **[UNCHANGED]**
+### 5.6 Address Verification API (Shell Company Detection) **[MODIFIED v3.1]** — 🟡 PARTIAL
 
-#### Google Geocoding + Places
+> **As-built:** Only **Google Places text search** is implemented (`/maps/api/place/textsearch/json?query={legal_name} {city} {country}`), returning name / formatted_address / business_status / rating for up to ~5 places. For Indian vendors a second, sharper Places lookup runs on the **AuthBridge-verified GSTIN registered address** (§5.10). The **Geocoding API, Place Details, Street View, and the mass-registration shell-address blocklist below are 🔮 NOT built** — the only signal used today is `business_status` (e.g., permanently closed).
+
+#### Google Places (text search) — ✅ IMPLEMENTED · Geocoding/Street-View/shell-cluster — 🔮 PLANNED
 ```
-Geocoding:  GET https://maps.googleapis.com/maps/api/geocode/json
-            ?address={registered_address}&key={key}
+As-built:   GET https://maps.googleapis.com/maps/api/place/textsearch/json
+            ?query={legal_name} {city} {country}&key={key}
 
-Places:     GET https://maps.googleapis.com/maps/api/place/details/json
-            ?place_id={id}&fields=name,types,rating,user_ratings_total&key={key}
+Vision:     GET .../geocode/json + /place/details/json + Street View
+            + known mass-address blocklist
 
 Risk signals:
   - place types = ["establishment"] but no business name → suspicious
@@ -836,7 +959,9 @@ Risk signals:
   - Street View API returns residential building for claimed commercial HQ → MEDIUM
 ```
 
-### 5.7 Document OCR Pipeline (Local, Offline-Capable) **[MODIFIED v3.0]**
+### 5.7 Document OCR Pipeline (Local, Offline-Capable) **[MODIFIED v3.0]** — 🔮 PLANNED
+
+> **🔮 Status note (v3.1):** Not built. No `pytesseract`/`pdf2image` dependency, no `app/ocr/extractor.py`, and no document-upload control in the intake UI. Retained as roadmap. *(Note: the model id in the legacy code sample below, `claude-sonnet-4-6`, does match the model the rest of the app now uses.)*
 
 This pipeline is **not** a separate input tier — it is an optional convenience that fills gaps in the single unified intake (manual form, Excel, or SAP import) whenever the user attaches a supporting document. Its output merges into the same `VendorInputRecord`, never a separate record. **Unlike the LLM extraction step below, the OCR text recognition itself runs fully on-device via Tesseract and requires no internet connection.** The subsequent entity-extraction call to Claude does require connectivity; if offline, raw OCR text is stored locally and entity extraction is queued for the next online session.
 
@@ -888,9 +1013,9 @@ OCR TEXT:
     return json.loads(message.content[0].text)
 ```
 
-### 5.8 Excel Intake Parser **[UNCHANGED]**
+### 5.8 Excel Intake Parser **[MODIFIED v3.1]** — ✅ IMPLEMENTED (differently)
 
-Parses `VendorLens_Intake_Template.xlsx` (Section 3.3) into the same `VendorInputRecord` used by the manual form, validates required columns, and splits semicolon-delimited array fields. Runs fully locally, no network access required.
+> **As-built:** The implemented parser (`/vendor/parse-excel` + the Excel branch of `/vendor/intake` in `app/main.py`) is **more flexible** than the fixed-template parser below. It does **fuzzy/substring header matching** via `map_excel_columns()` (e.g. "Vendor Name", "Supplier", "BP Number", "GSTIN", "PAN No", "Udyam" all map to the right fields) rather than requiring exact `VendorLens_Intake_Template.xlsx` headers, and it **reads all rows** and returns them so the UI can show a vendor picker (not strictly one-row). `director_names`/`director_din` are still split on `;`. It runs fully locally. The fixed-template reference implementation below is retained as the documented contract.
 
 ```python
 # app/intake/excel_parser.py
@@ -937,7 +1062,9 @@ def _split_list(cell: str) -> list[str]:
     return [v.strip() for v in cell.split(";") if v.strip()] if cell else []
 ```
 
-### 5.9 SAP Export Parser **[NEW v3.0]**
+### 5.9 SAP Export Parser **[NEW v3.0]** — 🔮 PLANNED
+
+> **🔮 Status note (v3.1):** Not built (no `app/intake/sap_parser.py`). Roadmap. Reference design retained below.
 
 Parses an SAP vendor master export (Section 3.7) into one or more `VendorInputRecord` objects. Supports both `.xlsx` and `.csv`, with fuzzy column header matching and a manual-mapping fallback. Runs fully locally, no network access or SAP system connectivity required.
 
@@ -1001,9 +1128,35 @@ def _normalize_country(raw: str) -> str | None:
     return COUNTRY_LOOKUP.get(raw.strip().upper())
 ```
 
+### 5.10 AuthBridge — India Identity Verification & Alternate-Name Enrichment **[NEW v3.1]** — ✅ IMPLEMENTED
+
+The India verification path is a core, built feature and the deepest part of the pipeline. The verification provider is **AuthBridge** (an Indian identity/KYC verification provider, using a purchased API key); it **replaces the Sandbox TSP** used in earlier prototype iterations. Any vendor with `jurisdiction_country = IN` **or** with any Indian identifier present (`tax_identifier`/GSTIN, `pan_number`, `msmed_certificate_number`) triggers it.
+
+**Phase 1 — live verification.** AuthBridge is queried for whichever identifiers are present:
+```
+GSTIN verify → status (Active/Cancelled/Suspended), legal name (lgnm),
+               trade name (tradeNam), principal registered address (pradr),
+               constitution of business, nature of business activity
+PAN verify   → name on record, active/valid status
+MSME/Udyam   → enterprise name, type (Micro/Small/Medium), district/state, activity
+```
+Risk signals: GSTIN `Cancelled`/`Suspended` or invalid → HIGH; PAN inactive or name mismatch → MEDIUM–HIGH; MSME invalid → MEDIUM.
+
+**Phase 2 — sandbox-of-truth enrichment (the differentiator).** From the AuthBridge responses the pipeline extracts **alternate/trade names** (GSTIN `tradeNam`/`lgnm`, PAN name, MSME name that differ from the submitted `legal_name`) and the **verified registered address**, then re-runs the *entire* search graph under each real name (`_enrich_from_sandbox_intel`): OpenCorporates, OpenSanctions, GDELT, NewsAPI (adverse + regulatory), all four Serper queries, and Wikipedia — plus a sharpened Google Places lookup on the verified GSTIN address. This surfaces risk attached to the company's **actual registered identity**, not just the name a procurement user typed in. Results are returned under `sandbox_enrichment.by_alternate_name[<name>]` and `sandbox_enrichment.gstin_address_places`, and feed the LLM synthesis (§6) and the dashboard's **India Verification** tab.
+
+> **Note on naming:** internal code identifiers still use `sandbox_*` (e.g., `sandbox_tsp`, `sandbox_intel`, `sandbox_enrichment`, `SandboxAPI`) from the prior provider. These are **internal names only**; the live provider is AuthBridge. Renaming the code symbols to `authbridge_*` is a tracked follow-up (see §13).
+
 ---
 
-## 6. AI/ML & NLP Specifications **[UNCHANGED — see Section 0 changelog note]**
+## 6. AI/ML & NLP Specifications **[MODIFIED v3.1]**
+
+> **🟡 Status note (v3.1) — how the implemented LLM step differs:**
+> - **Model:** `claude-sonnet-4-6` (env-overridable via `CLAUDE_MODEL`), one `messages.create` call, `max_tokens≈5000`, no tool-use — the model is asked to return raw JSON which is then parsed (markdown fences stripped if present).
+> - **Output is richer than §6.1.** The single call returns **three** top-level keys: `findings` (the adverse-findings array, similar to below), **`section_analysis`** (a one-line summary + `relevance` 0–100 + `criticality` 0–100 for each of 9 sections — corporate_registry, sanctions_watchlists, domain_ssl, physical_address, wikipedia, news_media, reviews, company_profile, adverse_web), and **`news_article_analysis`** (per-article summary + relevance + criticality, indexed to a flattened news list). These power the dashboard's **AI Insights** (per-section score bars + per-article badges).
+> - **Input is the raw aggregated source dict** (the actual API keys: `opencorporates`, `opensanctions`, `gdelt`, `serper`, `serper_reviews`, `serper_profile`, `serper_news`, `newsapi`, `newsapi_regulatory`, `wikipedia`, `whois`, `ssl`, `microlink`, `google_places`, `sandbox_tsp`, `sandbox_intel`, `sandbox_enrichment`) — **not** the curated nested schema shown in §6.1.
+> - **`MOCK_MODE`/`TEST_MODE`** short-circuits this entirely and returns one of several canned scenarios (no API key or spend).
+> - **Entity resolver (§6.2) and rule-engine anomaly detector (§6.3) are 🔮 NOT built.** The model does all synthesis; there is no deterministic pre-LLM pass.
+> The prompt and schemas below are the v3.0 design baseline, retained for reference.
 
 ### 6.1 LLM System Prompt — KYB Adverse Findings Extraction
 
@@ -1216,7 +1369,9 @@ ABSOLUTE RULES:
 - PEP status alone is NOT adverse — flag in operational_grey_areas only.
 ```
 
-### 6.2 Entity Resolution Logic
+### 6.2 Entity Resolution Logic — 🔮 PLANNED
+
+> **🔮 Status note (v3.1):** Not built — there is no `entity_resolver.py`. In practice the **AuthBridge alternate-name extraction (§5.10)** performs the closest equivalent for Indian vendors (recovering real trade/legal names to re-search). General cross-source fuzzy canonicalization remains roadmap.
 
 Before passing data to the LLM, the local application performs entity resolution to canonicalize names across sources:
 
@@ -1249,7 +1404,9 @@ def is_same_entity(name_a: str, name_b: str, threshold: float = 0.85) -> bool:
     return fuzzy_match_score(name_a, name_b) >= threshold
 ```
 
-### 6.3 Anomaly Detection — Rule Engine (Pre-LLM)
+### 6.3 Anomaly Detection — Rule Engine (Pre-LLM) — 🔮 PLANNED
+
+> **🔮 Status note (v3.1):** Not built — there is no `anomaly_detector.py` and no pre-LLM deterministic pass. The FATF-blacklist check, domain-age-vs-incorporation check, shell-address list, and free-email check below are all roadmap; today these judgments (where made) are left to the LLM from the raw data.
 
 A deterministic rule engine runs locally before LLM synthesis to flag hard signals with 100% precision:
 
@@ -1308,9 +1465,20 @@ class AnomalyDetector:
 
 ---
 
-## 7. Risk Scoring Logic **[UNCHANGED]**
+## 7. Risk Scoring Logic **[MODIFIED v3.1]** — 🟡 PARTIAL
 
-### 7.1 Risk Score Computation
+> **🟡 Status note (v3.1) — what actually computes the risk level:** The shipped logic in `run_scan_workflow` (`app/main.py`) is a **simple severity-presence ladder**, not the weighted multiplier model below:
+> ```python
+> critical = #findings with severity 'critical'
+> high     = #'high'   ;  medium = #'medium'
+> overall_risk = 'CRITICAL' if critical else
+>                'HIGH'     if high     else
+>                'MEDIUM'   if medium   else
+>                'LOW'      if len(findings) > 0 else 'CLEAN'
+> ```
+> A more elaborate **100-point deduction scorer exists in `app/services/risk_scorer.py`** (`score_findings()` — deducts per severity × confidence, returns score/tier/recommendations) but is **currently unused** (not imported by `main.py`). The weighted `CATEGORY_MULTIPLIERS` calculator in §7.1 below is a **third** design that is not implemented. **Decision needed (see §13):** adopt `risk_scorer.py`, adopt the §7.1 model, or keep the ladder. Severity itself comes from the LLM's per-finding `severity`, so the final level is **LLM-influenced**, not fully deterministic as the original text claimed.
+
+### 7.1 Risk Score Computation — 🔮 design (not the shipped ladder; see status note above)
 
 The final risk level is computed from the adverse findings using a weighted severity model — NOT from the LLM's own assessment (which is advisory only). This ensures the score is deterministic and auditable.
 
@@ -1387,9 +1555,16 @@ def compute_risk_score(findings: list[dict]) -> tuple[int, str]:
 
 ## 8. Data Storage — Store Only Negatives Pattern **[MODIFIED v3.0]**
 
-### 8.1 Local Database Schema **[MODIFIED v3.0]**
+### 8.1 Local Database Schema **[MODIFIED v3.1]**
 
-VendorLens stores all data locally, in **SQLite** by default (zero-config, file at `%LOCALAPPDATA%\VendorLens\data\vendorlens.db`) or in a **local PostgreSQL 15** instance for users/teams who opt into that configuration during install. The schema below is identical across both backends; SQLite-specific type adjustments (e.g., `TEXT` for arrays/JSON instead of native `TEXT[]`/`JSONB`) are handled transparently by the ORM layer.
+> **🟡 Status note (v3.1) — as-built schema (`app/core/models.py`, SQLAlchemy):** Four tables exist — **`vendor_inputs`**, **`kyb_scans`**, **`adverse_findings`**, **`scan_subjects`**. The **`scan_queue`** and **`api_response_cache`** tables below are **🔮 NOT built** (no offline queue, no cache). Differences from the SQL below:
+> - `vendor_inputs` **adds** `pan_number`, `msmed_certificate_number`, `mobile_number`, `city`; **omits** `sap_vendor_number` and `created_by`; `source_method` is `manual`/`excel` only (no `sap`).
+> - `kyb_scans.raw_data_summary` (JSON) actually stores the **full `sources_summary` + `section_analysis`** (a curated data summary), not just metadata — so "store only negatives" is **partially** observed: adverse findings are the only *findings* persisted, but a per-source data summary is also retained to render the dashboard.
+> - There is **no DB table for the token budget** — it lives in a local file, `token_state.json` (managed by `token_manager`).
+> - Tables are created via `Base.metadata.create_all` on startup; **no Alembic migrations**. UUIDs are stored as `String(36)`.
+> The DDL below is the v3.0 PostgreSQL-oriented design, retained for reference; treat the bullets above as authoritative for the running SQLite schema.
+
+VendorLens stores all data locally, in **SQLite** by default (file `test.db`; the `%LOCALAPPDATA%\VendorLens\data\` location is the 🔮 packaged-install target) or in a **PostgreSQL** instance when `DATABASE_URL` is set. The schema below is broadly identical across both backends; SQLite-specific type adjustments (e.g., `TEXT`/`String` for arrays/JSON instead of native `TEXT[]`/`JSONB`) are handled by the ORM layer.
 
 ```sql
 -- =============================================
@@ -1421,12 +1596,11 @@ CREATE TABLE vendor_inputs (
 );
 
 -- =============================================
--- OFFLINE SCAN QUEUE — new in v3.0
--- Holds scan requests created while the laptop
--- was offline; the local scheduler drains this
--- table automatically once connectivity returns
+-- OFFLINE SCAN QUEUE — 🔮 PLANNED (NOT BUILT)
+-- No offline queue exists; scans run immediately
+-- via FastAPI BackgroundTasks. Retained as roadmap.
 -- =============================================
-CREATE TABLE scan_queue (
+CREATE TABLE scan_queue (   -- 🔮 not created in the current DB
     queue_id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     scan_id             UUID NOT NULL,
     input_id            UUID NOT NULL REFERENCES vendor_inputs(input_id),
@@ -1507,11 +1681,10 @@ CREATE TABLE scan_subjects (
 );
 
 -- =============================================
--- LOCAL API RESPONSE CACHE — new in v3.0
--- TTL-based cache to reduce repeat API calls and
--- support partial offline review of recent lookups
+-- LOCAL API RESPONSE CACHE — 🔮 PLANNED (NOT BUILT)
+-- No response cache exists today. Retained as roadmap.
 -- =============================================
-CREATE TABLE api_response_cache (
+CREATE TABLE api_response_cache (   -- 🔮 not created in the current DB
     cache_key           TEXT PRIMARY KEY,   -- hash of (api_name + query params)
     api_name             VARCHAR(30),
     response_json        JSONB,
@@ -1536,7 +1709,17 @@ CREATE INDEX idx_scan_queue_status    ON scan_queue(status);
 CREATE INDEX idx_api_cache_expiry     ON api_response_cache(expires_at);
 ```
 
+### 8.1a Token-Budget Store **[NEW v3.1]** — ✅ IMPLEMENTED
+
+Not a DB table — a small local JSON file (`token_state.json`) managed by `token_manager`:
+
+- Starts at **50,000** tokens; a Deep Diligence scan **deducts 15,000** up front and `/scan` returns **HTTP 402** if the balance is insufficient.
+- `scripts/replenish_tokens.py` tops the balance back up (`--amount`, `--reset`, `--status`), capped at 50,000, with an audit line per run.
+- This is an internal usage/cost-control budget, distinct from the Anthropic API billing.
+
 ### 8.2 Data Retention Policy **[MODIFIED v3.0]**
+
+> **🟡 Status note (v3.1):** Rows below for `scan_queue` and `api_response_cache` are 🔮 PLANNED (those tables don't exist). OCR/SAP/Excel-file retention rows are 🔮 (those intake paths/temp-file flows aren't built — the Excel upload is parsed in-memory and not persisted). `vendor_inputs`, `kyb_scans`, `adverse_findings`, `scan_subjects` are ✅ persisted locally as described. Add: `token_state.json` persists indefinitely until replenished/reset.
 
 | Data Type | What's Stored | Retention | Rationale |
 |---|---|---|---|
@@ -1558,7 +1741,9 @@ CREATE INDEX idx_api_cache_expiry     ON api_response_cache(expires_at);
 
 ## 9. Non-Functional Requirements **[MODIFIED v3.0]**
 
-### 9.1 Performance Targets **[MODIFIED v3.0]**
+### 9.1 Performance Targets **[MODIFIED v3.1]**
+
+> **🟡 Status note (v3.1):** Targets are aspirational and largely unmeasured. Reality checks: there is **no Quick Scan**, **no offline auto-dispatch**, and **no Excel/PDF export** to time. The implemented Deep Diligence adds a deliberate ~3s pacing delay plus the live API fan-out and the LLM call, and the workflow now enforces internal timeouts (≈240s for aggregation, ≈60s for the LLM call). Cold-start/HiDPI/installer numbers depend on the 🔮 packaged build.
 
 | Operation | Target SLA |
 |---|---|
@@ -1598,7 +1783,9 @@ CREATE INDEX idx_api_cache_expiry     ON api_response_cache(expires_at);
 
 ---
 
-## 10. Installation, Deployment & Update Model **[NEW v3.0]**
+## 10. Installation, Deployment & Update Model **[NEW v3.0]** — 🔮 PLANNED
+
+> **🔮 Status note (v3.1):** This entire section is **roadmap**. Today the prototype runs from source: a Python venv (`uvicorn app.main:app`) and the Vite/React dev server (with an Electron wrapper available). There is **no** signed installer, no NSIS/MSI, no SCCM/Intune packaging, no first-launch DB-backend wizard, and no Squirrel auto-update. API keys are read from a local `.env` (not a central secrets vault). Retained as the target deployment model.
 
 ### 10.1 Installation
 
@@ -1622,7 +1809,9 @@ CREATE INDEX idx_api_cache_expiry     ON api_response_cache(expires_at);
 
 ---
 
-## 11. Security Considerations **[NEW v3.0 — replaces prior web-hosted security model]**
+## 11. Security Considerations **[NEW v3.0]** — 🟡 PARTIAL
+
+> **🟡 Status note (v3.1):** Mostly **target-state**. As-built today: the FastAPI service is dev-run on loopback (CORS is currently wide-open `allow_origins=["*"]` for local development — to be tightened), **API keys live in a plaintext local `.env`** (no DPAPI/secrets-vault, no encryption-at-rest beyond whatever BitLocker the laptop has), there is **no app-level auth** and **no `created_by`/audit-log capture** (the Windows-identity binding is not implemented), and **no code signing**. The controls below are the intended model, not current guarantees — treat them as roadmap until the packaged build (§10) lands.
 
 - **No inbound network exposure:** the local FastAPI service binds exclusively to `127.0.0.1` and is never reachable from the corporate network or internet; there is no server-side attack surface to harden or patch
 - **API key management:** external API keys and the Anthropic API key are not entered by end users; they are provisioned via a secure configuration mechanism managed by IT/Compliance (e.g., encrypted config file deployed alongside the installer, or integration with a corporate secrets manager) and stored encrypted at rest on the local disk using Windows DPAPI
@@ -1636,7 +1825,9 @@ CREATE INDEX idx_api_cache_expiry     ON api_response_cache(expires_at);
 
 ---
 
-## 12. Out of Scope (v1.0 Desktop Release) **[MODIFIED v3.0]**
+## 12. Out of Scope (v1.0 Desktop Release) **[MODIFIED v3.1]**
+
+> **Status note (v3.1):** Beyond the items below, the following were in the v3.0 *vision* but are **not in the current build** and are effectively deferred: **Quick Scan tier, offline scan queue/connectivity monitor, SAP import, on-device OCR, Excel/PDF export, dedicated UBO/officer APIs (OpenOwnership/Companies House/MCA), deterministic anomaly rule engine, and the packaged signed installer + auto-update.** See the §0 status table for the authoritative built/not-built map.
 
 | Feature | Rationale |
 |---|---|
@@ -1653,11 +1844,13 @@ CREATE INDEX idx_api_cache_expiry     ON api_response_cache(expires_at);
 
 ---
 
-## 13. Open Questions & Decisions **[MODIFIED v3.0]**
+## 13. Open Questions & Decisions **[MODIFIED v3.1]**
+
+> **Status note (v3.1):** Several v3.0 questions are now resolved by the build (annotated **[RESOLVED]** below), and new ones arise from the as-built reality (rows 16–20).
 
 | # | Question | Owner | Priority |
 |---|---|---|---|
-| 1 | Which LLM provider? Claude vs GPT-4o — cost/latency tradeoff at scale | Arch Team | HIGH |
+| 1 | ~~Which LLM provider?~~ **[RESOLVED]** Claude — `claude-sonnet-4-6`, env-overridable via `CLAUDE_MODEL` | Arch Team | — |
 | 2 | OpenCorporates free tier limits (10 req/min) — do we need paid plan at launch volume? | Product | HIGH |
 | 3 | GDELT returns articles in 100+ languages — do we need translation before LLM synthesis? | Eng | MEDIUM |
 | 4 | MCA (India) DIN API has no official public endpoint — scraper needed or skip? | Eng | MEDIUM |
@@ -1672,6 +1865,11 @@ CREATE INDEX idx_api_cache_expiry     ON api_response_cache(expires_at);
 | 13 | Device decommissioning procedure — who is responsible for confirming "Remove all local data" is run before a procurement laptop is reassigned or retired? | IT | HIGH |
 | 14 | Should a future phase support live SAP system connectivity (RFC/OData) in place of manual export/import? | Product | LOW |
 | 15 | What is the IT-approved distribution channel for the installer — SCCM, Intune, or a self-service internal portal? | IT | HIGH |
+| 16 | **[v3.1]** India verification is now **AuthBridge** (key purchased). When do we rename internal `sandbox_*` code symbols (`SandboxAPI`, `sandbox_tsp`, `sandbox_intel`, `sandbox_enrichment`) to `authbridge_*` to match? | Eng | MEDIUM |
+| 17 | **[v3.1]** Risk scoring: keep the shipped severity-ladder, adopt the unused `risk_scorer.py` 100-point model, or build the §7.1 weighted-multiplier model? Pick one and remove the others | Arch/Compliance | HIGH |
+| 18 | **[v3.1]** Token budget (50k cap, 15k/deep scan): are these the right numbers, and should the budget move from `token_state.json` into the DB for multi-user/audit? | Product/Finance | MEDIUM |
+| 19 | **[v3.1]** Quick Scan was removed — is deep-only the intended product, or should a lighter tier return for fast triage? | Product | MEDIUM |
+| 20 | **[v3.1]** Security hardening before any real deployment: lock down CORS, move keys out of plaintext `.env`, add app/audit identity. Sequence vs. the packaged build (§10)? | Security/Eng | HIGH |
 
 ---
 

@@ -1,5 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 sqlalchemy
 pydantic
 python-dotenv
@@ -8,3 +8,7 @@ anthropic
 pydantic-settings
 pytest
 psycopg2-binary
+pandas
+openpyxl
+python-multipart
+python-whois
